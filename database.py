@@ -13,8 +13,8 @@ cursor.execute('''
 cursor.execute('''
     CREATE TABLE IF NOT EXISTS memory (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        message TEXT,
-        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+        key TEXT UNIQUE,
+        value TEXT
     )
 ''')
 conn.commit()
@@ -32,13 +32,16 @@ def read_conversation(limit: int):
     ''', (limit,))
     return [{"role": row[0], "parts": [row[1]]} for row in cursor.fetchall()]
 
-def add_to_memory(role: str, message: str):
+def add_to_memory(key: str, value: str):
     cursor.execute('''
-        INSERT INTO memory (message) VALUES (?)
-    ''', (message,))
+        INSERT INTO memory (key, value) VALUES (?, ?)
+        ON CONFLICT(key) DO UPDATE SET value=excluded.value
+    ''', (key, value))
     conn.commit()
-def read_memory(limit: int):
+def read_memory():
     cursor.execute('''
-        SELECT message FROM memory ORDER BY timestamp DESC LIMIT ?
-    ''', (limit,))
-    return cursor.fetchall()
+        SELECT key, value FROM memory ''')
+    rows = cursor.fetchall()
+    if not rows:
+        return ''
+    return "\n".join(f"{row[0]}: {row[1]}" for row in rows)
