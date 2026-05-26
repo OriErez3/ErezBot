@@ -37,6 +37,7 @@ tools = types.Tool(
     ]
 )
 def strip_response(response: str):
+    checked_response = response
     if response.startswith("REMEMBER"):
         try:
             lines = response.split("\n", 1)
@@ -59,7 +60,12 @@ async def respond(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE):
     add_to_conversation("user", user_message)
     conversation = read_conversation(20)
     memory = read_memory()
-    while True: 
+    contents=[types.Content(role=msg["role"], parts=[types.Part(text=msg["parts"][0])])
+            for msg in conversation]
+    max_iterations = 5
+    iteration = 0
+    while iteration< max_iterations:
+        iteration += 1 
         response = client.models.generate_content(
             model="gemini-3.1-flash-lite",
             config=types.GenerateContentConfig(tools=[tools],
@@ -74,8 +80,7 @@ async def respond(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE):
 
             The REMEMBER line must always be followed by a normal response on a new line. Never put the REMEMBER and your response on the same line. Only use REMEMBER for personal information about the user specifically — things like their name, preferences, goals, or facts about their life. Never use REMEMBER for general world facts, trivia, or things that aren't specific to the user."""
         ),
-            contents=[types.Content(role=msg["role"], parts=[types.Part(text=msg["parts"][0])])
-            for msg in conversation])
+            contents=contents)
         part = response.candidates[0].content.parts[0]
         if part.function_call:
             function_call = part.function_call
