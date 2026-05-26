@@ -5,6 +5,7 @@ import os
 from google import genai
 from google.genai import types
 from database import add_to_conversation, read_conversation, read_memory, add_to_memory
+from tools import run_shell
 
 
 load_dotenv()
@@ -17,7 +18,24 @@ if gemini_key is None:
     raise ValueError("GEMINI_API_KEY environment variable is required")
 
 client = genai.Client(api_key=gemini_key)
-
+tools = types.Tool(
+    function_declarations=[
+        types.FunctionDeclaration(
+            name="run_shell",
+            description="Runs a shell command on the user's computer and returns the output. Use this to interact with the file system, run scripts, or execute system commands.",
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={
+                    "command": types.Schema(
+                        type=types.Type.STRING,
+                        description="The shell command to run"
+                    )
+                },
+                required=["command"]
+            )
+        )
+    ]
+)
 def strip_response(response: str):
     if response.startswith("REMEMBER"):
         try:
@@ -41,25 +59,44 @@ async def respond(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE):
     add_to_conversation("user", user_message)
     conversation = read_conversation(20)
     memory = read_memory()
-    response = client.models.generate_content(
-        model="gemini-3.1-flash-lite",
-        config=types.GenerateContentConfig(
-            system_instruction=f"""You are a personal AI assistant.
+    while True: 
+        response = client.models.generate_content(
+            model="gemini-3.1-flash-lite",
+            config=types.GenerateContentConfig(tools=[tools],
+                system_instruction=f"""You are a personal AI assistant.
 
-        Here is what you remember about the user:
-            {memory}
+            Here is what you remember about the user:
+                {memory}
 
-        If the user tells you something important, you MUST format your response exactly like this:
-        REMEMBER key:value
-        Your normal response here on the next line.
+            If the user tells you something important, you MUST format your response exactly like this:
+            REMEMBER key:value
+            Your normal response here on the next line.
 
-        The REMEMBER line must always be followed by a normal response on a new line. Never put the REMEMBER and your response on the same line. Only use REMEMBER for personal information about the user specifically — things like their name, preferences, goals, or facts about their life. Never use REMEMBER for general world facts, trivia, or things that aren't specific to the user."""
-    ),
-        contents=[types.Content(role=msg["role"], parts=[types.Part(text=msg["parts"][0])])
-        for msg in conversation])
-    checked_response = strip_response(response.text)
-    add_to_conversation("model", checked_response)
-    await update.message.reply_text(checked_response) # type: ignore
+            The REMEMBER line must always be followed by a normal response on a new line. Never put the REMEMBER and your response on the same line. Only use REMEMBER for personal information about the user specifically — things like their name, preferences, goals, or facts about their life. Never use REMEMBER for general world facts, trivia, or things that aren't specific to the user."""
+        ),
+            contents=[types.Content(role=msg["role"], parts=[types.Part(text=msg["parts"][0])])
+            for msg in conversation])
+        part = response.candidates[0].content.parts[0]
+        if part.function_call:
+            function_call = part.function_call
+            if function_call.name == "run_shell":
+                result = run_shell(function_call.args["command"])
+            contents.append(types.Content(role="model", parts=[part]))
+            contents.append(types.Content(
+                role="user",
+                parts=[types.Part(
+                    function_response=types.FunctionResponse(
+                        name=function_call.name,
+                        response={"result": result}
+                        )
+                        )]
+            ))
+        else:
+            checked_response = strip_response(response.text)
+            add_to_conversation("model", checked_response)
+            await update.message.reply_text(checked_response) # type: ignore
+            break
+        
 
 def main() -> None:
     application = ApplicationBuilder().token(telegram_key).build() # type: ignore
