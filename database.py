@@ -19,7 +19,9 @@ cursor.execute('''
 ''')
 conn.commit()
 
-
+def clear_conversation():
+    cursor.execute("DELETE FROM conversation")
+    conn.commit()
 
 def add_to_conversation(role: str, message: str):
     cursor.execute('''

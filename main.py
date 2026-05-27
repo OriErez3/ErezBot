@@ -5,8 +5,8 @@ import os
 from google import genai
 from google.genai import types
 from database import add_to_conversation, read_conversation, read_memory, add_to_memory
-from tools import run_shell
-
+from tools import run_shell, save_memory, delete_memory
+from database import clear_conversation
 
 load_dotenv()
 
@@ -33,33 +33,52 @@ tools = types.Tool(
                 },
                 required=["command"]
             )
+        ),
+        types.FunctionDeclaration(
+            name="save_memory",
+            description="Saves a key-value pair to the bot's memory. Use this to remember important information about the user, such as their name, preferences, goals, or facts about their life.",
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={
+                    "key": types.Schema(
+                        type=types.Type.STRING,
+                        description="The key to identify the memory"
+                    ),
+                    "value": types.Schema(
+                        type=types.Type.STRING,
+                        description="The value to remember"
+                    )
+                },
+                required=["key", "value"]
+            )
+        ),
+        types.FunctionDeclaration(
+            name="delete_memory",
+            description="Deletes a key-value pair from the bot's memory. Use this to remove information that is no longer relevant or that the user wants to forget.",
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={
+                    "key": types.Schema(
+                        type=types.Type.STRING,
+                        description="The key of the memory to delete"
+                    )
+                },
+                required=["key"]
+            )
         )
     ]
-)
-def strip_response(response: str):
-    checked_response = response
-    if response.startswith("REMEMBER"):
-        try:
-            lines = response.split("\n", 1)
-            remember_line = lines[0]
-            _, kv = remember_line.split(" ", 1)
-            key, value = kv.split(":", 1)
-            add_to_memory(key.strip(), value.strip())
-            checked_response = lines[1].strip() if len(lines) > 1 else "Got it, I'll remember that!"
-            if not checked_response:
-                checked_response = "Got it, I'll remember that!"
-        except ValueError:
-            checked_response = "Got it, I'll remember that!"
-    return checked_response
-
+)   
 async def start(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Hello! I'm your Telegram bot.") # type: ignore
 
 async def respond(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE):
     user_message = update.message.text # type: ignore
     add_to_conversation("user", user_message)
-    conversation = read_conversation(20)
+    conversation = read_conversation(10)
+    print("CONVERSATION:", conversation)
     memory = read_memory()
+    print("MEMORY:", memory)
+
     contents=[types.Content(role=msg["role"], parts=[types.Part(text=msg["parts"][0])])
             for msg in conversation]
     max_iterations = 5
@@ -69,23 +88,30 @@ async def respond(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE):
         response = client.models.generate_content(
             model="gemini-3.1-flash-lite",
             config=types.GenerateContentConfig(tools=[tools],
-                system_instruction=f"""You are a personal AI assistant.
+                system_instruction=f"""You are a personal AI assistant. Be helpful, conversational, and concise.
 
             Here is what you remember about the user:
-                {memory}
+            {memory}
 
-            If the user tells you something important, you MUST format your response exactly like this:
-            REMEMBER key:value
-            Your normal response here on the next line.
+            You have access to these tools:
+            - Use save_memory when the user tells you something personal worth remembering permanently, like their name, preferences, or goals
+            - Use delete_memory when a stored fact is no longer accurate
+            - Use run_shell to execute commands on the user's computer
 
-            The REMEMBER line must always be followed by a normal response on a new line. Never put the REMEMBER and your response on the same line. Only use REMEMBER for personal information about the user specifically — things like their name, preferences, goals, or facts about their life. Never use REMEMBER for general world facts, trivia, or things that aren't specific to the user."""
+            Only use tools when necessary. For normal conversation just respond naturally.
+            After using any tool, always follow up with a direct response to the user's original message."""
         ),
             contents=contents)
         part = response.candidates[0].content.parts[0]
+        print(part)
         if part.function_call:
             function_call = part.function_call
             if function_call.name == "run_shell":
                 result = run_shell(function_call.args["command"])
+            elif function_call.name == "save_memory":
+                result = save_memory(function_call.args["key"], function_call.args["value"])
+            elif function_call.name == "delete_memory":
+                result = delete_memory(function_call.args["key"])
             contents.append(types.Content(role="model", parts=[part]))
             contents.append(types.Content(
                 role="user",
@@ -97,15 +123,32 @@ async def respond(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE):
                         )]
             ))
         else:
-            checked_response = strip_response(response.text)
-            add_to_conversation("model", checked_response)
-            await update.message.reply_text(checked_response) # type: ignore
-            break
+            if not response.text or not response.text.strip():
+                follow_up = client.models.generate_content(
+                model="gemini-2.0-flash-lite",
+                config=types.GenerateContentConfig(
+                system_instruction=f"""You are a personal AI assistant.
+    Here is what you remember about the user:
+    {read_memory()}"""
+            ),
+            contents=contents + [types.Content(
+                role="user",
+                parts=[types.Part(text="Acknowledge what you just did and respond naturally.")]
+            )]
+        )
+                checked_response = follow_up.text.strip() if follow_up.text else "Done!"
+                add_to_conversation("model", checked_response)
+                await update.message.reply_text(checked_response)
+                break
+async def clear(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE):
+    clear_conversation()
+    await update.message.reply_text("Conversation cleared!")       
         
 
 def main() -> None:
     application = ApplicationBuilder().token(telegram_key).build() # type: ignore
     application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("clear", clear))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, respond))
     application.run_polling(allowed_updates=telegram.Update.ALL_TYPES)
 
