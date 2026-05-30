@@ -7,9 +7,10 @@ from google.genai import types
 from database import add_to_conversation, read_conversation, read_memory, add_to_memory
 from tools import run_shell, save_memory, delete_memory
 from database import clear_conversation
-
+import platform
+#type: ignore
 load_dotenv()
-
+#Loads the environment variables for the APIs
 telegram_key = os.getenv("TELEGRAM_TOKEN")
 gemini_key = os.getenv("GEMINI_API_KEY")
 if telegram_key is None:
@@ -18,6 +19,8 @@ if gemini_key is None:
     raise ValueError("GEMINI_API_KEY environment variable is required")
 
 client = genai.Client(api_key=gemini_key)
+os_name = platform.system()
+#Loads the tools for the AI to use. 
 tools = types.Tool(
     function_declarations=[
         types.FunctionDeclaration(
@@ -67,82 +70,64 @@ tools = types.Tool(
             )
         )
     ]
-)   
+)
+
+#Test to make sure everything is working
 async def start(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Hello! I'm your Telegram bot.") # type: ignore
+    await update.message.reply_text("Hello! I'm your Google AI assistant.") # type: ignore
 
-async def respond(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE):
-    user_message = update.message.text # type: ignore
-    add_to_conversation("user", user_message)
-    conversation = read_conversation(10)
-    print("CONVERSATION:", conversation)
-    memory = read_memory()
-    print("MEMORY:", memory)
-
-    contents=[types.Content(role=msg["role"], parts=[types.Part(text=msg["parts"][0])])
-            for msg in conversation]
-    max_iterations = 5
-    iteration = 0
-    while iteration< max_iterations:
-        iteration += 1 
-        response = client.models.generate_content(
-            model="gemini-3.1-flash-lite",
-            config=types.GenerateContentConfig(tools=[tools],
-                system_instruction=f"""You are a personal AI assistant. Be helpful, conversational, and concise.
-
-            Here is what you remember about the user:
-            {memory}
-
+system_instruction = f"""You are a personal AI assistant. Be helpful, conversational, and concise.
             You have access to these tools:
             - Use save_memory when the user tells you something personal worth remembering permanently, like their name, preferences, or goals
             - Use delete_memory when a stored fact is no longer accurate
-            - Use run_shell to execute commands on the user's computer
+            - Use run_shell to execute commands on the user's computer. Keep in mind you are on {os_name}. Use the correct commands for this OS. 
 
             Only use tools when necessary. For normal conversation just respond naturally.
             After using any tool, always follow up with a direct response to the user's original message."""
-        ),
-            contents=contents)
-        part = response.candidates[0].content.parts[0]
-        print(part)
-        if part.function_call:
-            function_call = part.function_call
-            if function_call.name == "run_shell":
-                result = run_shell(function_call.args["command"])
-            elif function_call.name == "save_memory":
-                result = save_memory(function_call.args["key"], function_call.args["value"])
-            elif function_call.name == "delete_memory":
-                result = delete_memory(function_call.args["key"])
-            contents.append(types.Content(role="model", parts=[part]))
-            contents.append(types.Content(
-                role="user",
-                parts=[types.Part(
-                    function_response=types.FunctionResponse(
-                        name=function_call.name,
-                        response={"result": result}
-                        )
-                        )]
-            ))
-        else:
-            if not response.text or not response.text.strip():
-                follow_up = client.models.generate_content(
-                model="gemini-2.0-flash-lite",
-                config=types.GenerateContentConfig(
-                system_instruction=f"""You are a personal AI assistant.
-    Here is what you remember about the user:
-    {read_memory()}"""
-            ),
-            contents=contents + [types.Content(
-                role="user",
-                parts=[types.Part(text="Acknowledge what you just did and respond naturally.")]
-            )]
+#Function to handle messages. Used the most often. 
+tool_dict = {
+    "run_shell": run_shell,
+    "save_memory": save_memory,
+    "delete_memory": delete_memory
+}
+async def respond(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE):
+    user_message = update.message.text # type: ignore
+    memory = read_memory() #Reads the bot's memory. This memory stores important information only. 
+    memory_context = [
+    types.Content(role="user", parts=[types.Part(text="What do you know about me?")]),
+    types.Content(role="model", parts=[types.Part(text=f"Here is what I know about you:\n{memory}")])
+] #Creating a fake conversation with memory to provide context for the AI. This way, the AI can refer to its memory when generating a response to the user's message.
+    conversation = read_conversation(10) #Reads the last 10 messages from the conversation history to provide context for the AI's response
+    contents=[types.Content(role=msg["role"], parts=[types.Part(text=msg["parts"][0])]) for msg in conversation] #Converts the conversation history into the correct format for Gemini API
+    chat = client.chats.create(
+            model="gemini-3.1-flash-lite",
+            history=memory_context+contents, #type: ignore 
+            config=types.GenerateContentConfig(tools=[tools],
+                system_instruction=system_instruction
+        ),)
+    add_to_conversation("user", user_message)#type: ignore #Saves the user's message to the conversation history in the database
+    response = chat.send_message(user_message)
+    while response.function_calls: #Checks if the AI called any tools in its response
+        for func in response.function_calls: #If it did, it executes the tool calls and gets the results
+            tool_name = func.name
+            if tool_name in tool_dict:
+                result = tool_dict[tool_name](**func.args) #Executes the tool function with the provided arguments and gets the result
+                function_response_part = chat.send_message(types.Part(
+        function_response=types.FunctionResponse(
+            name=tool_name,
+            id=func.id,
+            response={"result": result}
         )
-                checked_response = follow_up.text.strip() if follow_up.text else "Done!"
-                add_to_conversation("model", checked_response)
-                await update.message.reply_text(checked_response)
-                break
+    ))
+    await update.message.reply_text(response.text) #type: ignore #Sends the AI's response back to the user on Telegram
+    add_to_conversation("model", response.text) #type: ignore #Saves the AI's response to the conversation history in the database
+
+   
+    
+   
 async def clear(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE):
     clear_conversation()
-    await update.message.reply_text("Conversation cleared!")       
+    await update.message.reply_text("Conversation cleared!") #type: ignore      
         
 
 def main() -> None:
