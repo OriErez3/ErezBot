@@ -107,8 +107,14 @@ async def respond(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE):
         ),)
     add_to_conversation("user", user_message)#type: ignore #Saves the user's message to the conversation history in the database
     response = chat.send_message(user_message)
+    seen_calls = set() #To avoid calling the same tool multiple times in one response   
     while response.function_calls: #Checks if the AI called any tools in its response
         for func in response.function_calls: #If it did, it executes the tool calls and gets the results
+            call_key = f"{func.name}_{func.args}"
+            if call_key in seen_calls:
+                await update.message.reply_text("I got stuck in a loop, try rephrasing.") #type: ignore
+                return
+            seen_calls.add(call_key)
             tool_name = func.name
             if tool_name in tool_dict:
                 result = tool_dict[tool_name](**func.args) #Executes the tool function with the provided arguments and gets the result
