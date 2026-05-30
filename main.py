@@ -127,9 +127,26 @@ tools = types.Tool(
                     )
                 },
                 required=["filename"]
-            ))
-    ]
-        )
+            )),
+        types.FunctionDeclaration(
+        name="move_file",
+        description="Moves a file from a given source to a given destination.",
+        parameters=types.Schema(
+            type=types.Type.OBJECT,
+            properties={
+                "source": types.Schema(
+                    type=types.Type.STRING,
+                    description="The path of the file you want moved"
+                    ),
+                "destination": types.Schema(
+                    type=types.Type.STRING,
+                    description="The path of where the file is going"
+                    )
+                },
+                required=["source","destination"]
+            ))])
+
+
 #Test to make sure everything is working
 async def start(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Hello! I'm your Google AI assistant.") # type: ignore
@@ -195,8 +212,9 @@ async def respond(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE):
             response={"result": result}
         )
     ))
-    await update.message.reply_text(response.text) #type: ignore #Sends the AI's response back to the user on Telegram
     add_to_conversation("model", response.text) #type: ignore #Saves the AI's response to the conversation history in the database
+    await update.message.reply_text(response.text) #type: ignore #Sends the AI's response back to the user on Telegram
+   
 
    
     
