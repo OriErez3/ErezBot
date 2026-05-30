@@ -5,8 +5,8 @@ import os
 from google import genai
 from google.genai import types
 from database import add_to_conversation, read_conversation, read_memory, add_to_memory
-from tools import run_shell, save_memory, delete_memory
-from database import clear_conversation
+import tools as t
+import database
 import platform
 #type: ignore
 load_dotenv()
@@ -19,6 +19,7 @@ if gemini_key is None:
     raise ValueError("GEMINI_API_KEY environment variable is required")
 
 client = genai.Client(api_key=gemini_key)
+
 os_name = platform.system()
 #Loads the tools for the AI to use. 
 tools = types.Tool(
@@ -68,35 +69,78 @@ tools = types.Tool(
                 },
                 required=["key"]
             )
-        )
+        ),
+        types.FunctionDeclaration(
+            name="list_directory",
+            description="Returns the directory list of whatever path is inputted.",
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={
+                    "path": types.Schema(
+                        type=types.Type.STRING,
+                        description="The path to list."
+                    )
+                },
+                required=["path"]
+            )
+            ),
+        types.FunctionDeclaration(
+            name="read_file",
+            description="Reads a given path to a file, and returns the contents of the file. ",
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={
+                    "file_path": types.Schema(
+                        type=types.Type.STRING,
+                        description="The path to read."
+                    )
+                },
+                required=["file_path"]
+            )
+            ),
+        types.FunctionDeclaration(
+            name="write_file",
+            description="Writes a file to whatever path is inputted. Takes two inputs, the path, and the content of the file. ",
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={
+                    "path": types.Schema(
+                        type=types.Type.STRING,
+                        description="The path to write a file to."
+                    ),
+                    "content": types.Schema(
+                        type=types.Type.STRING,
+                        description="The content of whats in the file."
+                    )
+                },
+                required=["path","content"]
+            ))
     ]
-)
-
+        )
 #Test to make sure everything is working
 async def start(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Hello! I'm your Google AI assistant.") # type: ignore
 
 system_instruction = f"""You are a personal AI assistant. Be helpful, conversational, and concise.
-            You have access to these tools:
-            - Use save_memory when the user tells you something personal worth remembering permanently, like their name, preferences, or goals
-            - Use delete_memory when a stored fact is no longer accurate
-            - Use run_shell to execute commands on the user's computer. Keep in mind you are on {os_name}. Use the correct commands for this OS. 
+            Whenever using any tools, keep in mind you are on {os_name}, so use the right syntax.  
 
             Only use tools when necessary. For normal conversation just respond naturally.
             After using any tool, always follow up with a direct response to the user's original message."""
 #Function to handle messages. Used the most often. 
+
 tool_dict = {
-    "run_shell": run_shell,
-    "save_memory": save_memory,
-    "delete_memory": delete_memory
+    "run_shell": t.run_shell,
+    "list_directory": t.list_directory,
+    "read_file": t.read_file,
+    "write_file": t.write_file,
+    "save_memory": t.save_memory,
+    "delete_memory": t.delete_memory,
 }
+
 async def respond(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE):
     user_message = update.message.text # type: ignore
     memory = read_memory() #Reads the bot's memory. This memory stores important information only. 
-    memory_context = [
-    types.Content(role="user", parts=[types.Part(text="What do you know about me?")]),
-    types.Content(role="model", parts=[types.Part(text=f"Here is what I know about you:\n{memory}")])
-] #Creating a fake conversation with memory to provide context for the AI. This way, the AI can refer to its memory when generating a response to the user's message.
+    memory_context = [types.Content(role="user", parts=[types.Part(text="What do you know about me?")]), types.Content(role="model", parts=[types.Part(text=f"Here is what I know about you:\n{memory}")])] #Creating a fake conversation with memory to provide context for the AI. This way, the AI can refer to its memory when generating a response to the user's message.
     conversation = read_conversation(10) #Reads the last 10 messages from the conversation history to provide context for the AI's response
     contents=[types.Content(role=msg["role"], parts=[types.Part(text=msg["parts"][0])]) for msg in conversation] #Converts the conversation history into the correct format for Gemini API
     chat = client.chats.create(
@@ -107,6 +151,7 @@ async def respond(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE):
         ),)
     add_to_conversation("user", user_message)#type: ignore #Saves the user's message to the conversation history in the database
     response = chat.send_message(user_message)
+    #Everything below is for handling tool calls. 
     seen_calls = set() #To avoid calling the same tool multiple times in one response   
     while response.function_calls: #Checks if the AI called any tools in its response
         for func in response.function_calls: #If it did, it executes the tool calls and gets the results
@@ -132,7 +177,7 @@ async def respond(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE):
     
    
 async def clear(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE):
-    clear_conversation()
+    database.clear_conversation()
     await update.message.reply_text("Conversation cleared!") #type: ignore      
         
 
