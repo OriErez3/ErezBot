@@ -1,6 +1,7 @@
 import subprocess
 from database import add_to_memory
 import sqlite3
+import os 
 conn = sqlite3.connect("memory.db")
 cursor = conn.cursor()
 
@@ -19,3 +20,26 @@ def delete_memory(key: str):
         conn.commit()
         return f"Memory deleted: {key}"
     return f"Memory not found: {key}"
+
+def list_directory(path: str = ".") -> str:
+    try:
+        files = os.listdir(path)
+        return "\n".join(files)
+    except Exception as e:
+        return f"Error: {e}"
+
+def read_file(file_path: str) -> str:
+    try:
+        with open(file_path, "r") as file:
+            content = file.read()
+            return content
+    except Exception as e:
+        return f"Error: {e}"
+
+def write_file(path: str, content: str) -> str:
+    try:
+        with open(path, "w", encoding="utf-8") as file:
+            file.write(content)
+        return "Successfully written!"
+    except Exception as e:
+        return f"Error: {e}"
