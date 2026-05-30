@@ -114,6 +114,19 @@ tools = types.Tool(
                     )
                 },
                 required=["path","content"]
+            )),
+        types.FunctionDeclaration(
+            name="find_file",
+            description="Searches for a file by name in common directories including Desktop, Documents, and Downloads. Use this when the user wants to find a file but doesn't know the exact path.",
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={
+                    "filename": types.Schema(
+                        type=types.Type.STRING,
+                        description="The path to write a file to."
+                    )
+                },
+                required=["filename"]
             ))
     ]
         )
@@ -125,6 +138,7 @@ system_instruction = f"""You are a personal AI assistant. Be helpful, conversati
             Whenever using any tools, keep in mind you are on {os_name}, so use the right syntax.  
 
             Only use tools when necessary. For normal conversation just respond naturally.
+            If you can't find a file, please ask the user for the directory. If it's an important directory be sure to save it to memory. 
             After using any tool, always follow up with a direct response to the user's original message."""
 #Function to handle messages. Used the most often. 
 
@@ -135,6 +149,7 @@ tool_dict = {
     "write_file": t.write_file,
     "save_memory": t.save_memory,
     "delete_memory": t.delete_memory,
+    "find_file": t.find_file
 }
 
 async def respond(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE):
@@ -152,18 +167,28 @@ async def respond(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE):
     add_to_conversation("user", user_message)#type: ignore #Saves the user's message to the conversation history in the database
     response = chat.send_message(user_message)
     #Everything below is for handling tool calls. 
-    seen_calls = set() #To avoid calling the same tool multiple times in one response   
+    seen_calls = set()
     while response.function_calls: #Checks if the AI called any tools in its response
         for func in response.function_calls: #If it did, it executes the tool calls and gets the results
             call_key = f"{func.name}_{func.args}"
-            if call_key in seen_calls:
-                await update.message.reply_text("I got stuck in a loop, try rephrasing.") #type: ignore
-                return
-            seen_calls.add(call_key)
             tool_name = func.name
+            if call_key in seen_calls:
+                result = "This approach isn't working. Tell the user you're unable to complete the task and ask them for more information."
+                response = chat.send_message(types.Part(
+                    function_response=types.FunctionResponse(
+                name=tool_name,
+                id=func.id,
+                response={"result": result})))
+                break
+            seen_calls.add(call_key)
             if tool_name in tool_dict:
-                result = tool_dict[tool_name](**func.args) #Executes the tool function with the provided arguments and gets the result
-                function_response_part = chat.send_message(types.Part(
+                try:
+                    result = tool_dict[tool_name](**func.args) #Executes the tool function with the provided arguments and gets the result
+                except Exception as e:
+                    result = f"Error excecuting {tool_name}: {e}"
+            else:
+                result = f'Tool: {tool_name} not found'
+            response = chat.send_message(types.Part(
         function_response=types.FunctionResponse(
             name=tool_name,
             id=func.id,
