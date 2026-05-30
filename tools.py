@@ -2,9 +2,15 @@ import subprocess
 from database import add_to_memory
 import sqlite3
 import os 
+import shutil
+from dotenv import load_dotenv
+from tavily import TavilyClient
+
+load_dotenv()
+tav_key = os.getenv("TAVILY_KEY")
 conn = sqlite3.connect("memory.db")
 cursor = conn.cursor()
-
+tav_client = TavilyClient(tav_key)
 def run_shell(command: str) -> str:
     try:
         result = subprocess.run(
@@ -82,3 +88,24 @@ def find_file(filename: str) -> str:
                         matches.append(os.path.join(root, file))
     
     return "\n".join(matches) if matches else "No files found"
+
+def move_file(source: str, destination: str) -> str:
+    try:
+        shutil.move(source,destination)
+        return(f"{source} moved to {destination}")
+    except Exception as e:
+        return f"Error: {e}"
+
+def web_search(query: str) -> str:
+    try:
+        response = tav_client.search(query=query, max_results=5, include_answer=True)
+        answer = response.get("answer", "")
+        results = "\n\n".join(
+            f"Title: {r['title']}\nURL: {r['url']}\nContent: {r['content']}"
+            for r in response["results"]
+        )
+        if answer:
+            return f"Direct answer: {answer}\n\nSources:\n{results}"
+        return f"Sources:\n{results}"
+    except Exception as e:
+        return f"Error: {e}"

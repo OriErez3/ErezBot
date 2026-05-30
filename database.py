@@ -28,9 +28,10 @@ def add_to_conversation(role: str, message: str):
         INSERT INTO conversation (role, message) VALUES (?, ?)
     ''', (role, message))
     conn.commit()
+
 def read_conversation(limit: int):
     cursor.execute('''
-        SELECT role, message FROM conversation ORDER BY timestamp ASC LIMIT ?
+        SELECT role, message FROM conversation ORDER BY timestamp DESC LIMIT ?
     ''', (limit,))
     return [{"role": row[0], "parts": [row[1]]} for row in cursor.fetchall()]
 

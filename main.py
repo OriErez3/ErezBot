@@ -144,6 +144,19 @@ tools = types.Tool(
                     )
                 },
                 required=["source","destination"]
+            )),
+        types.FunctionDeclaration(
+        name="web_search",
+        description="Searches the web. Takes a query input, returns a formulated answer, as well as sources.",
+        parameters=types.Schema(
+            type=types.Type.OBJECT,
+            properties={
+                "query": types.Schema(
+                    type=types.Type.STRING,
+                    description="What you want to search up."
+                    )
+                },
+                required=["query"]
             ))])
 
 
@@ -166,7 +179,8 @@ tool_dict = {
     "write_file": t.write_file,
     "save_memory": t.save_memory,
     "delete_memory": t.delete_memory,
-    "find_file": t.find_file
+    "find_file": t.find_file,
+    "web_search": t.web_search
 }
 
 async def respond(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE):
@@ -189,6 +203,7 @@ async def respond(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE):
         for func in response.function_calls: #If it did, it executes the tool calls and gets the results
             call_key = f"{func.name}_{func.args}"
             tool_name = func.name
+            print(call_key)
             if call_key in seen_calls:
                 result = "This approach isn't working. Tell the user you're unable to complete the task and ask them for more information."
                 response = chat.send_message(types.Part(
