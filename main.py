@@ -10,6 +10,7 @@ import tools as t
 import database
 import platform
 import inspect 
+import base64
 #type: ignore
 load_dotenv()
 #Loads the environment variables for the APIs
@@ -212,73 +213,84 @@ tool_dict = {
 }
 screenshot_tools = {"browser_navigate", "browser_screenshot"}
 async def respond(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE):
-    user_message = update.message.text # type: ignore
-    memory = read_memory() #Reads the bot's memory. This memory stores important information only. 
-    memory_context = [types.Content(role="user", parts=[types.Part(text="What do you know about me?")]), types.Content(role="model", parts=[types.Part(text=f"Here is what I know about you:\n{memory}")])] #Creating a fake conversation with memory to provide context for the AI. This way, the AI can refer to its memory when generating a response to the user's message.
-    conversation = read_conversation(10) #Reads the last 10 messages from the conversation history to provide context for the AI's response
-    contents=[types.Content(role=msg["role"], parts=[types.Part(text=msg["parts"][0])]) for msg in conversation] #Converts the conversation history into the correct format for Gemini API
-    chat = client.chats.create(
-            model="gemini-3.1-flash-lite",
-            history=memory_context+contents, #type: ignore 
-            config=types.GenerateContentConfig(tools=[tools],
-                system_instruction=system_instruction
-        ),)
-    add_to_conversation("user", user_message)#type: ignore #Saves the user's message to the conversation history in the database
-    response = chat.send_message(user_message)
-    #Everything below is for handling tool calls. 
-    seen_calls = set()
-    while response.function_calls: #Checks if the AI called any tools in its response
-        for func in response.function_calls: #If it did, it executes the tool calls and gets the results
-            call_key = f"{func.name}_{func.args}"
-            tool_name = func.name
-            print(call_key)
-            
-            if call_key in seen_calls:
-                result = "This approach isn't working. Tell the user you're unable to complete the task and ask them for more information."
-                response = chat.send_message(types.Part(
-                    function_response=types.FunctionResponse(
-                name=tool_name,
-                id=func.id,
-                response={"result": result})))
-                break
-            seen_calls.add(call_key)
-            
-            if tool_name in tool_dict:
-                try:
-                    if inspect.iscoroutinefunction(tool_dict[tool_name]):
-                        result = await tool_dict[tool_name](**func.args) #Executes the tool function with the provided arguments and gets the result
+    try:
+        user_message = update.message.text # type: ignore
+        memory = read_memory() #Reads the bot's memory. This memory stores important information only. 
+        memory_context = [types.Content(role="user", parts=[types.Part(text="What do you know about me?")]), types.Content(role="model", parts=[types.Part(text=f"Here is what I know about you:\n{memory}")])] #Creating a fake conversation with memory to provide context for the AI. This way, the AI can refer to its memory when generating a response to the user's message.
+        conversation = read_conversation(10) #Reads the last 10 messages from the conversation history to provide context for the AI's response
+        contents=[types.Content(role=msg["role"], parts=[types.Part(text=msg["parts"][0])]) for msg in conversation] #Converts the conversation history into the correct format for Gemini API
+        chat = client.chats.create(
+                model="gemini-3.1-flash-lite",
+                history=memory_context+contents, #type: ignore 
+                config=types.GenerateContentConfig(tools=[tools],
+                    system_instruction=system_instruction
+            ),)
+        add_to_conversation("user", user_message)#type: ignore #Saves the user's message to the conversation history in the database
+        response = chat.send_message(user_message)
+        #Everything below is for handling tool calls. 
+        seen_calls = set()
+        while response.function_calls: #Checks if the AI called any tools in its response
+            for func in response.function_calls: #If it did, it executes the tool calls and gets the results
+                call_key = f"{func.name}_{func.args}"
+                tool_name = func.name
+                print(call_key)
+                
+                if call_key in seen_calls:
+                    result = "This approach isn't working. Tell the user you're unable to complete the task and ask them for more information."
+                    response = chat.send_message(types.Part(
+                        function_response=types.FunctionResponse(
+                    name=tool_name,
+                    id=func.id,
+                    response={"result": result})))
+                    break
+                seen_calls.add(call_key)
+                
+                if tool_name in tool_dict:
+                    try:
+                        if inspect.iscoroutinefunction(tool_dict[tool_name]):
+                            result = await tool_dict[tool_name](**func.args) #Executes the tool function with the provided arguments and gets the result
+                            print(result)
+                    except Exception as e:
+                        result = f"Error excecuting {tool_name}: {e}"
                         print(result)
-                except Exception as e:
-                    result = f"Error excecuting {tool_name}: {e}"
-                    print(result)
-            else:
-                result = f'Tool: {tool_name} not found'
-            
-            if tool_name in screenshot_tools and not result.startswith("Error"):
-                response = chat.send_message(types.Part(
-                    function_response=types.FunctionResponse(
-                        name=tool_name,
-                        id=func.id,
-                        response = {
-                            "result": "Screenshot taken successfully",
-                            "image": {
-                                "type": "image",
-                                "data": result,
-                                "mime_type":"image/png"
-                            }
-                        }
+                else:
+                    result = f'Tool: {tool_name} not found'
+                
+                if tool_name in screenshot_tools and not result.startswith("Error"):
+                    image_bytes = base64.b64decode(result)
+                    response = chat.send_message([types.Part(
+                        function_response=types.FunctionResponse(
+                            name=tool_name,
+                            id=func.id,
+                            response = {"result": "Screenshot taken successfully"}
+                        )
+
+                    ),
+                    types.Part.from_bytes(
+                        data=image_bytes,
+                        mime_type="image/png"
                     )
-                ))
-            else:
-                response = chat.send_message(types.Part(
-            function_response=types.FunctionResponse(
-                name=tool_name,
-                id=func.id,
-                response={"result": result}
-            )
-        ))
-    add_to_conversation("model", response.text) #type: ignore #Saves the AI's response to the conversation history in the database
-    await update.message.reply_text(response.text) #type: ignore #Sends the AI's response back to the user on Telegram
+                    ])
+                else:
+                    response = chat.send_message(types.Part(
+                function_response=types.FunctionResponse(
+                    name=tool_name,
+                    id=func.id,
+                    response={"result": result}
+                )
+            ))
+        add_to_conversation("model", response.text) #type: ignore #Saves the AI's response to the conversation history in the database
+        await update.message.reply_text(response.text) #type: ignore #Sends the AI's response back to the user on Telegram
+    except Exception as e:
+        error_message = str(e)
+        if "429" in error_message or "quota" in error_message.lower() or "exhausted" in error_message.lower():
+            await update.message.reply_text("I've hit my API rate limit. Please wait a moment and try again.")
+        elif "503" in error_message or "unavailable" in error_message.lower():
+            await update.message.reply_text("Gemini is currently unavailable. Please try again in a few minutes.")
+        elif "token" in error_message.lower():
+            await update.message.reply_text("The conversation is too long. Try /clear and start fresh.")
+        else:
+            await update.message.reply_text(f"Something went wrong: {error_message}")
    
 
    
