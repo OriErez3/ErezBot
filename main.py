@@ -2,12 +2,14 @@ import telegram
 from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters
 from dotenv import load_dotenv
 import os
+import asyncio
 from google import genai
 from google.genai import types
 from database import add_to_conversation, read_conversation, read_memory, add_to_memory
 import tools as t
 import database
 import platform
+import inspect 
 #type: ignore
 load_dotenv()
 #Loads the environment variables for the APIs
@@ -123,7 +125,7 @@ tools = types.Tool(
                 properties={
                     "filename": types.Schema(
                         type=types.Type.STRING,
-                        description="The path to write a file to."
+                        description="The file you want to look for"
                     )
                 },
                 required=["filename"]
@@ -157,7 +159,31 @@ tools = types.Tool(
                     )
                 },
                 required=["query"]
-            ))])
+            )),
+        types.FunctionDeclaration(
+        name="browser_navigate",
+        description="Goes to a given URL and returns the screenshot data.",
+        parameters=types.Schema(
+            type=types.Type.OBJECT,
+            properties={
+                "url": types.Schema(
+                    type=types.Type.STRING,
+                    description="The website you want to go"
+                    )
+                },
+                required=["url"]
+            )),
+            types.FunctionDeclaration(
+            name="browser_screenshot",
+            description="Takes a screenshot of the current browser page and returns it. Use this to see the current state of the page after any action.",
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={}
+            ))
+            ])
+            
+
+            
 
 
 #Test to make sure everything is working
@@ -180,9 +206,11 @@ tool_dict = {
     "save_memory": t.save_memory,
     "delete_memory": t.delete_memory,
     "find_file": t.find_file,
-    "web_search": t.web_search
+    "web_search": t.web_search,
+    "browser_navigate": t.browser_navigate,
+    "browser_screenshot": t.browser_screenshot
 }
-
+screenshot_tools = {"browser_navigate", "browser_screenshot"}
 async def respond(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE):
     user_message = update.message.text # type: ignore
     memory = read_memory() #Reads the bot's memory. This memory stores important information only. 
@@ -204,6 +232,7 @@ async def respond(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE):
             call_key = f"{func.name}_{func.args}"
             tool_name = func.name
             print(call_key)
+            
             if call_key in seen_calls:
                 result = "This approach isn't working. Tell the user you're unable to complete the task and ask them for more information."
                 response = chat.send_message(types.Part(
@@ -213,20 +242,41 @@ async def respond(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE):
                 response={"result": result})))
                 break
             seen_calls.add(call_key)
+            
             if tool_name in tool_dict:
                 try:
-                    result = tool_dict[tool_name](**func.args) #Executes the tool function with the provided arguments and gets the result
+                    if inspect.iscoroutinefunction(tool_dict[tool_name]):
+                        result = await tool_dict[tool_name](**func.args) #Executes the tool function with the provided arguments and gets the result
+                        print(result)
                 except Exception as e:
                     result = f"Error excecuting {tool_name}: {e}"
+                    print(result)
             else:
                 result = f'Tool: {tool_name} not found'
-            response = chat.send_message(types.Part(
-        function_response=types.FunctionResponse(
-            name=tool_name,
-            id=func.id,
-            response={"result": result}
-        )
-    ))
+            
+            if tool_name in screenshot_tools and not result.startswith("Error"):
+                response = chat.send_message(types.Part(
+                    function_response=types.FunctionResponse(
+                        name=tool_name,
+                        id=func.id,
+                        response = {
+                            "result": "Screenshot taken successfully",
+                            "image": {
+                                "type": "image",
+                                "data": result,
+                                "mime_type":"image/png"
+                            }
+                        }
+                    )
+                ))
+            else:
+                response = chat.send_message(types.Part(
+            function_response=types.FunctionResponse(
+                name=tool_name,
+                id=func.id,
+                response={"result": result}
+            )
+        ))
     add_to_conversation("model", response.text) #type: ignore #Saves the AI's response to the conversation history in the database
     await update.message.reply_text(response.text) #type: ignore #Sends the AI's response back to the user on Telegram
    

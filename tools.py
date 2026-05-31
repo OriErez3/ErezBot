@@ -5,7 +5,8 @@ import os
 import shutil
 from dotenv import load_dotenv
 from tavily import TavilyClient
-
+from playwright.async_api import async_playwright
+import base64
 load_dotenv()
 tav_key = os.getenv("TAVILY_KEY")
 conn = sqlite3.connect("memory.db")
@@ -107,5 +108,34 @@ def web_search(query: str) -> str:
         if answer:
             return f"Direct answer: {answer}\n\nSources:\n{results}"
         return f"Sources:\n{results}"
+    except Exception as e:
+        return f"Error: {e}"
+    
+#Browser things
+playwright_instance = None
+browser_instance = None
+page_instance = None
+
+async def browser_navigate(url: str) -> str:
+    global playwright_instance,browser_instance, page_instance
+    try:
+        if browser_instance is None:
+            playwright_instance = await async_playwright().start()
+            browser_instance = await playwright_instance.chromium.launch(headless=False)
+            page_instance = await browser_instance.new_page()
+        await page_instance.goto(url)
+        screenshot = await page_instance.screenshot()
+        return base64.b64encode(screenshot).decode("utf-8")
+    except Exception as e:
+        return f"Error: {e}"
+
+
+async def browser_screenshot() -> str:
+    global page_instance
+    try:
+        if page_instance is None:
+            return "Error: No browser open. Use browser_navigate first."
+        screenshot = await page_instance.screenshot()
+        return base64.b64encode(screenshot).decode("utf-8")
     except Exception as e:
         return f"Error: {e}"
