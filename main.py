@@ -180,6 +180,23 @@ tools = types.Tool(
             parameters=types.Schema(
                 type=types.Type.OBJECT,
                 properties={}
+            )),
+            types.FunctionDeclaration(
+            name="browser_click",
+            description="Clicks at whatever coordinate you want, waits for it to load, and returns a screenshot of what happened",
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={
+                    "x": types.Schema(
+                        type=types.Type.STRING,
+                        description="The X-axis of where you want to click"
+                    ),
+                    "y": types.Schema(
+                        type=types.Type.STRING,
+                        description="The Y-axis of where you want to click"
+                    )
+                },
+                required=["x","y"]
             ))
             ])
             
@@ -209,15 +226,16 @@ tool_dict = {
     "find_file": t.find_file,
     "web_search": t.web_search,
     "browser_navigate": t.browser_navigate,
-    "browser_screenshot": t.browser_screenshot
+    "browser_screenshot": t.browser_screenshot,
+    "browser_click": t.browser_click
 }
-screenshot_tools = {"browser_navigate", "browser_screenshot"}
+screenshot_tools = {"browser_navigate", "browser_screenshot", "browser_click"}
 async def respond(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         user_message = update.message.text # type: ignore
         memory = read_memory() #Reads the bot's memory. This memory stores important information only. 
         memory_context = [types.Content(role="user", parts=[types.Part(text="What do you know about me?")]), types.Content(role="model", parts=[types.Part(text=f"Here is what I know about you:\n{memory}")])] #Creating a fake conversation with memory to provide context for the AI. This way, the AI can refer to its memory when generating a response to the user's message.
-        conversation = read_conversation(10) #Reads the last 10 messages from the conversation history to provide context for the AI's response
+        conversation = read_conversation(5) #Reads the last 5 messages from the conversation history to provide context for the AI's response
         contents=[types.Content(role=msg["role"], parts=[types.Part(text=msg["parts"][0])]) for msg in conversation] #Converts the conversation history into the correct format for Gemini API
         chat = client.chats.create(
                 model="gemini-3.1-flash-lite",

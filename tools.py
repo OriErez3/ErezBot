@@ -139,3 +139,15 @@ async def browser_screenshot() -> str:
         return base64.b64encode(screenshot).decode("utf-8")
     except Exception as e:
         return f"Error: {e}"
+    
+async def browser_click(x: int, y:int) -> str:
+    global page_instance
+    try:
+        if page_instance is None:
+            return "Error: no browser is open. Use browser_navigate to open it."
+        await page_instance.mouse.click(x,y)
+        screenshot = await page_instance.screenshot
+        return base64.b64encode(screenshot).decode("utf-8")
+    except Exception as e:
+        return f"Error: {e}"
+     
