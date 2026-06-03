@@ -121,8 +121,8 @@ async def browser_navigate(url: str) -> str:
     try:
         if browser_instance is None:
             playwright_instance = await async_playwright().start()
-            browser_instance = await playwright_instance.chromium.launch(headless=False)
-            page_instance = await browser_instance.new_page()
+            browser_instance = await playwright_instance.chromium.launch(headless=False, args=["--disable-blink-features=AutomationControlled"])
+            page_instance = await browser_instance.new_page(viewport={"width": 1280, "height": 720})
         await page_instance.goto(url)
         screenshot = await page_instance.screenshot()
         return base64.b64encode(screenshot).decode("utf-8")
@@ -139,7 +139,62 @@ async def browser_screenshot() -> str:
         return base64.b64encode(screenshot).decode("utf-8")
     except Exception as e:
         return f"Error: {e}"
-    
+
+async def browser_get_elements(screenshot: bool = False) -> tuple:
+    global page_instance
+    try:
+        if page_instance is None:
+            return "Error: No browser open. Use browser_navigate first."
+        
+        # Query DOM
+        elements = await page_instance.evaluate("""
+            () => {
+                const selectors = 'a, button, input, select, textarea, [role=button], [role=link], [onclick]';
+                const els = document.querySelectorAll(selectors);
+                return Array.from(els).map((el, i) => {
+                    const rect = el.getBoundingClientRect();
+                    return {
+                        index: i + 1,
+                        tag: el.tagName.toLowerCase(),
+                        text: (el.innerText || el.value || el.placeholder || el.ariaLabel || '').slice(0, 30).trim(),
+                        x: rect.x,
+                        y: rect.y,
+                        width: rect.width,
+                        height: rect.height
+                    };
+                }).filter(el => el.width > 0 && el.height > 0 && el.y >= 0);
+            }
+        """)
+        
+        # Build element map
+        element_map = "\n".join([
+            f"[{el['index']}] {el['tag']}: '{el['text']}' at ({el['x']:.0f}, {el['y']:.0f})"
+            for el in elements
+        ])
+        
+        if not screenshot:
+            return element_map
+        
+        # Take and annotate screenshot
+        shot = await page_instance.screenshot()
+        img = Image.open(io.BytesIO(shot))
+        draw = ImageDraw.Draw(img)
+        
+        for el in elements:
+            x, y, w, h = el['x'], el['y'], el['width'], el['height']
+            draw.rectangle([x, y, x+w, y+h], outline="red", width=2)
+            draw.rectangle([x, y-15, x+25, y], fill="red")
+            draw.text((x+2, y-14), str(el['index']), fill="white")
+        
+        buffer = io.BytesIO()
+        img.save(buffer, format="PNG")
+        image_b64 = base64.b64encode(buffer.getvalue()).decode("utf-8")
+        
+        return image_b64, element_map
+        
+    except Exception as e:
+        return f"Error: {e}"
+
 async def browser_click(x: int, y:int) -> str:
     global page_instance
     try:

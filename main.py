@@ -188,11 +188,11 @@ tools = types.Tool(
                 type=types.Type.OBJECT,
                 properties={
                     "x": types.Schema(
-                        type=types.Type.STRING,
+                        type=types.Type.INTEGER,
                         description="The X-axis of where you want to click"
                     ),
                     "y": types.Schema(
-                        type=types.Type.STRING,
+                        type=types.Type.INTEGER,
                         description="The Y-axis of where you want to click"
                     )
                 },
@@ -231,6 +231,16 @@ tools = types.Tool(
                     )
                 },
                 required=["direction"]
+            )),
+            types.FunctionDeclaration(
+            name="browser_screenshot_annotated",
+            description="Returns a tuple containing a text map of all the buttons. Can also send an annotated picutre with the text map if needed",
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={"screenshot": types.Schema(
+                    type=types.Type.BOOLEAN,
+                    description="Will return an annotated picture of all the button's bounding boxes if set to true. Defaults to false."
+                )}         
             ))
             ])
             
@@ -247,7 +257,8 @@ system_instruction = f"""You are a personal AI assistant. Be helpful, conversati
 
             Only use tools when necessary. For normal conversation just respond naturally.
             If you can't find a file, please ask the user for the directory. If it's an important directory be sure to save it to memory. 
-            After using any tool, always follow up with a direct response to the user's original message."""
+            After using any tool, always follow up with a direct response to the user's original message.
+            For anything related to the browser, the browser viewport is always 1280x720. After every click, check the screenshot. If the page didn't change, try clicking slightly different coordinates."""
 #Function to handle messages. Used the most often. 
 
 tool_dict = {
@@ -263,15 +274,16 @@ tool_dict = {
     "browser_screenshot": t.browser_screenshot,
     "browser_click": t.browser_click,
     "browser_type": t.browser_type,
-    "browser_scroll": t.browser_scroll
+    "browser_scroll": t.browser_scroll,
+    "browser_screenshot_annotated": t.browser_get_elements
 }
-screenshot_tools = {"browser_navigate", "browser_screenshot", "browser_click", "browser_type", "browser_scroll"}
+screenshot_tools = {"browser_navigate", "browser_screenshot", "browser_click", "browser_type", "browser_scroll", "browser_get_elements"}
 async def respond(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         user_message = update.message.text # type: ignore
         memory = read_memory() #Reads the bot's memory. This memory stores important information only. 
         memory_context = [types.Content(role="user", parts=[types.Part(text="What do you know about me?")]), types.Content(role="model", parts=[types.Part(text=f"Here is what I know about you:\n{memory}")])] #Creating a fake conversation with memory to provide context for the AI. This way, the AI can refer to its memory when generating a response to the user's message.
-        conversation = read_conversation(5) #Reads the last 5 messages from the conversation history to provide context for the AI's response
+        conversation = read_conversation(7) #Reads the last 7 messages from the conversation history to provide context for the AI's response
         contents=[types.Content(role=msg["role"], parts=[types.Part(text=msg["parts"][0])]) for msg in conversation] #Converts the conversation history into the correct format for Gemini API
         chat = client.chats.create(
                 model="gemini-3.1-flash-lite",
@@ -287,7 +299,7 @@ async def respond(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE):
             for func in response.function_calls: #If it did, it executes the tool calls and gets the results
                 call_key = f"{func.name}_{func.args}"
                 tool_name = func.name
-                print(call_key)
+                print(func.name)
                 
                 if call_key in seen_calls:
                     result = "This approach isn't working. Tell the user you're unable to complete the task and ask them for more information."
@@ -303,7 +315,7 @@ async def respond(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE):
                     try:
                         if inspect.iscoroutinefunction(tool_dict[tool_name]):
                             result = await tool_dict[tool_name](**func.args) #Executes the tool function with the provided arguments and gets the result
-                            print(result)
+                            print(tool_name)
                     except Exception as e:
                         result = f"Error excecuting {tool_name}: {e}"
                         print(result)
