@@ -1,5 +1,7 @@
+import string
 import subprocess
 from database import add_to_memory
+from database import read_memory as read_memory_db
 import sqlite3
 import os 
 import shutil
@@ -7,11 +9,14 @@ from dotenv import load_dotenv
 from tavily import TavilyClient
 from playwright.async_api import async_playwright
 import base64
+from PIL import Image, ImageDraw, ImageFont
+import io
 load_dotenv()
 tav_key = os.getenv("TAVILY_KEY")
 conn = sqlite3.connect("memory.db")
 cursor = conn.cursor()
 tav_client = TavilyClient(tav_key)
+elements_cache = {}
 def run_shell(command: str) -> str:
     try:
         result = subprocess.run(
@@ -37,6 +42,15 @@ def delete_memory(key: str):
         conn.commit()
         return f"Memory deleted: {key}"
     return f"Memory not found: {key}"
+def read_memory() -> str:
+    try:
+        memory = read_memory_db()  # your existing db function
+        if not memory:
+            return "No memories saved."
+        return memory
+    except Exception as e:
+        return f"Error: {e}"
+
 
 def list_directory(path: str = ".") -> str:
     try:
@@ -140,7 +154,7 @@ async def browser_screenshot() -> str:
     except Exception as e:
         return f"Error: {e}"
 
-async def browser_get_elements(screenshot: bool = False) -> tuple:
+async def browser_get_elements(screenshot: bool = False):
     global page_instance
     try:
         if page_instance is None:
@@ -165,7 +179,9 @@ async def browser_get_elements(screenshot: bool = False) -> tuple:
                 }).filter(el => el.width > 0 && el.height > 0 && el.y >= 0);
             }
         """)
-        
+        elements_cache.clear()
+        for el in elements:
+            elements_cache[el['index']] = el
         # Build element map
         element_map = "\n".join([
             f"[{el['index']}] {el['tag']}: '{el['text']}' at ({el['x']:.0f}, {el['y']:.0f})"
@@ -192,6 +208,24 @@ async def browser_get_elements(screenshot: bool = False) -> tuple:
         
         return image_b64, element_map
         
+    except Exception as e:
+        return f"Error: {e}"
+
+async def browser_click_element(index: int) -> str:
+    global page_instance, elements_cache
+    try:
+        if page_instance is None:
+            return "Error: No browser open."
+        
+        el = elements_cache.get(index)
+        if el is None:
+            return "Error: Element not found. Run browser_get_elements first."
+        
+        x = el['x'] + el['width'] / 2
+        y = el['y'] + el['height'] / 2
+        await page_instance.mouse.click(x, y)
+        screenshot = await page_instance.screenshot()
+        return base64.b64encode(screenshot).decode("utf-8")
     except Exception as e:
         return f"Error: {e}"
 
@@ -228,6 +262,17 @@ async def browser_scroll(direction: str, amount: int = 300) -> str:
             await page_instance.mouse.wheel(0, amount)
         elif direction == "up":
             await page_instance.mouse.wheel(0, -amount)
+        screenshot = await page_instance.screenshot()
+        return base64.b64encode(screenshot).decode("utf-8")
+    except Exception as e:
+        return f"Error: {e}"
+
+async def browser_go_back():
+    global page_instance
+    try:
+        if page_instance is None:
+            return "Error: No browser open."
+        await page_instance.go_back()
         screenshot = await page_instance.screenshot()
         return base64.b64encode(screenshot).decode("utf-8")
     except Exception as e:
