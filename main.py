@@ -197,6 +197,40 @@ tools = types.Tool(
                     )
                 },
                 required=["x","y"]
+            )),
+            types.FunctionDeclaration(
+            name="browser_type",
+            description="Types whatever is passed in and can press the enter button to submit it to a form.",
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={
+                    "text": types.Schema(
+                        type=types.Type.STRING,
+                        description="Whatever message you want to type."
+                    ),
+                    "press_enter": types.Schema(
+                        type=types.Type.BOOLEAN,
+                        description="Use to press enter if needed. Defaults to False"
+                    )
+                },
+                required=["text"]
+            )),
+            types.FunctionDeclaration(
+            name="browser_scroll",
+            description="Scrolls up or down depending on whats passed in.",
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={
+                    "direction": types.Schema(
+                        type=types.Type.STRING,
+                        description="Takes either up or down as directions to scroll."
+                    ),
+                    "amount": types.Schema(
+                        type=types.Type.INTEGER,
+                        description="Used to define how much to scroll up or down. Defaults to 300"
+                    )
+                },
+                required=["direction"]
             ))
             ])
             
@@ -227,9 +261,11 @@ tool_dict = {
     "web_search": t.web_search,
     "browser_navigate": t.browser_navigate,
     "browser_screenshot": t.browser_screenshot,
-    "browser_click": t.browser_click
+    "browser_click": t.browser_click,
+    "browser_type": t.browser_type,
+    "browser_scroll": t.browser_scroll
 }
-screenshot_tools = {"browser_navigate", "browser_screenshot", "browser_click"}
+screenshot_tools = {"browser_navigate", "browser_screenshot", "browser_click", "browser_type", "browser_scroll"}
 async def respond(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         user_message = update.message.text # type: ignore

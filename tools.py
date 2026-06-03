@@ -146,8 +146,34 @@ async def browser_click(x: int, y:int) -> str:
         if page_instance is None:
             return "Error: no browser is open. Use browser_navigate to open it."
         await page_instance.mouse.click(x,y)
-        screenshot = await page_instance.screenshot
+        screenshot = await page_instance.screenshot()
         return base64.b64encode(screenshot).decode("utf-8")
     except Exception as e:
         return f"Error: {e}"
      
+async def browser_type(text: str, press_enter: bool = False) -> str:
+    global page_instance
+    try:
+        if page_instance is None:
+            return "Error: no browser is open. Use browser_navigate to open it."
+        await page_instance.keyboard.type(text)
+        if press_enter:
+            await page_instance.keyboard.press("Enter")
+        screenshot = await page_instance.screenshot()
+        return base64.b64encode(screenshot).decode("utf-8")
+    except Exception as e:
+        return f"Error: {e}"
+
+async def browser_scroll(direction: str, amount: int = 300) -> str:
+    global page_instance
+    try:
+        if page_instance is None:
+            return "Error: No browser open. Use browser_navigate first."
+        if direction == "down":
+            await page_instance.mouse.wheel(0, amount)
+        elif direction == "up":
+            await page_instance.mouse.wheel(0, -amount)
+        screenshot = await page_instance.screenshot()
+        return base64.b64encode(screenshot).decode("utf-8")
+    except Exception as e:
+        return f"Error: {e}"
