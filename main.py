@@ -9,10 +9,12 @@ from database import add_to_conversation, read_conversation, read_memory, add_to
 import tools as t
 import database
 import platform
-import inspect 
+import inspect
 import base64
+import logging
 #type: ignore
 load_dotenv()
+logger = logging.getLogger(__name__)
 #Loads the environment variables for the APIs
 telegram_key = os.getenv("TELEGRAM_TOKEN")
 gemini_key = os.getenv("GEMINI_API_KEY")
@@ -345,12 +347,13 @@ async def respond(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE):
         response = chat.send_message(user_message)
         #Everything below is for handling tool calls. 
         seen_calls = set()
-        while response.function_calls: #Checks if the AI called any tools in its response
+        give_up = False
+        while response.function_calls and not give_up: #Checks if the AI called any tools in its response
             for func in response.function_calls: #If it did, it executes the tool calls and gets the results
                 call_key = f"{func.name}_{func.args}"
                 tool_name = func.name
-                print(func.name)
-                
+                logger.debug("Tool call: %s", tool_name)
+
                 if call_key in seen_calls:
                     result = "This approach isn't working. Tell the user you're unable to complete the task and ask them for more information."
                     response = chat.send_message(types.Part(
@@ -358,9 +361,10 @@ async def respond(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE):
                     name=tool_name,
                     id=func.id,
                     response={"result": result})))
+                    give_up = True
                     break
                 seen_calls.add(call_key)
-                
+
                 if tool_name in tool_dict:
                     try:
                         if inspect.iscoroutinefunction(tool_dict[tool_name]):
@@ -368,8 +372,8 @@ async def respond(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE):
                         else:
                             result = tool_dict[tool_name](**func.args)
                     except Exception as e:
-                        result = f"Error excecuting {tool_name}: {e}"
-                        print(result)
+                        result = f"Error executing {tool_name}: {e}"
+                        logger.warning(result)
                 else:
                     result = f'Tool: {tool_name} not found'
                 if isinstance(result, tuple):

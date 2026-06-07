@@ -1,4 +1,4 @@
-import string
+import logging
 import subprocess
 from database import add_to_memory
 from database import read_memory as read_memory_db
@@ -12,6 +12,7 @@ import base64
 from PIL import Image, ImageDraw, ImageFont
 import io
 load_dotenv()
+logger = logging.getLogger(__name__)
 tav_key = os.getenv("TAVILY_KEY")
 conn = sqlite3.connect("memory.db")
 cursor = conn.cursor()
@@ -56,8 +57,7 @@ def list_directory(path: str = ".") -> str:
     try:
         # normalize the path so forward and back slashes both work
         path = os.path.normpath(path)
-        print(f"Listing: {path}")
-        print(f"Exists: {os.path.exists(path)}")
+        logger.debug("Listing: %s (exists: %s)", path, os.path.exists(path))
         if not os.path.exists(path):
             return f"Path does not exist: {path}"
         if not os.path.isdir(path):
@@ -92,7 +92,6 @@ def write_file(path: str, content: str, binary: bool = False) -> str:
 
 
 def find_file(filename: str) -> str:
-    import os
     search_paths = [
         os.path.expanduser("~"),  # home directory
         os.path.expanduser("~/Desktop"),
@@ -137,6 +136,14 @@ browser_instance = None
 page_instance = None
 current_url = ""
 
+async def _screenshot_b64() -> str:
+    screenshot = await page_instance.screenshot()
+    return base64.b64encode(screenshot).decode("utf-8")
+
+def _invalidate_elements_cache() -> None:
+    # The DOM/layout may have changed, so cached element positions can no longer be trusted.
+    elements_cache.clear()
+
 async def browser_navigate(url: str) -> str:
     global playwright_instance,browser_instance, page_instance, current_url
     try:
@@ -146,8 +153,8 @@ async def browser_navigate(url: str) -> str:
             page_instance = await browser_instance.new_page(viewport={"width": 1280, "height": 720})
         await page_instance.goto(url)
         current_url = page_instance.url
-        screenshot = await page_instance.screenshot()
-        return base64.b64encode(screenshot).decode("utf-8")
+        _invalidate_elements_cache()
+        return await _screenshot_b64()
     except Exception as e:
         return f"Error: {e}"
 def browser_current_url() -> str:
@@ -158,8 +165,7 @@ async def browser_screenshot() -> str:
     try:
         if page_instance is None:
             return "Error: No browser open. Use browser_navigate first."
-        screenshot = await page_instance.screenshot()
-        return base64.b64encode(screenshot).decode("utf-8")
+        return await _screenshot_b64()
     except Exception as e:
         return f"Error: {e}"
 
@@ -225,17 +231,17 @@ async def browser_click_element(index: int) -> str:
     try:
         if page_instance is None:
             return "Error: No browser open."
-        
+
         el = elements_cache.get(index)
-        print(f"Clicking element {index}: {el}")
+        logger.debug("Clicking element %s: %s", index, el)
         if el is None:
             return "Error: Element not found. Run browser_get_elements first."
-        
+
         x = el['x'] + el['width'] / 2
         y = el['y'] + el['height'] / 2
         await page_instance.mouse.click(x, y)
-        screenshot = await page_instance.screenshot()
-        return base64.b64encode(screenshot).decode("utf-8")
+        _invalidate_elements_cache()
+        return await _screenshot_b64()
     except Exception as e:
         return f"Error: {e}"
 
@@ -245,11 +251,11 @@ async def browser_click(x: int, y:int) -> str:
         if page_instance is None:
             return "Error: no browser is open. Use browser_navigate to open it."
         await page_instance.mouse.click(x,y)
-        screenshot = await page_instance.screenshot()
-        return base64.b64encode(screenshot).decode("utf-8")
+        _invalidate_elements_cache()
+        return await _screenshot_b64()
     except Exception as e:
         return f"Error: {e}"
-     
+
 async def browser_type(text: str, press_enter: bool = False) -> str:
     global page_instance
     try:
@@ -258,8 +264,8 @@ async def browser_type(text: str, press_enter: bool = False) -> str:
         await page_instance.keyboard.type(text)
         if press_enter:
             await page_instance.keyboard.press("Enter")
-        screenshot = await page_instance.screenshot()
-        return base64.b64encode(screenshot).decode("utf-8")
+        _invalidate_elements_cache()
+        return await _screenshot_b64()
     except Exception as e:
         return f"Error: {e}"
 
@@ -272,8 +278,8 @@ async def browser_scroll(direction: str, amount: int = 300) -> str:
             await page_instance.mouse.wheel(0, amount)
         elif direction == "up":
             await page_instance.mouse.wheel(0, -amount)
-        screenshot = await page_instance.screenshot()
-        return base64.b64encode(screenshot).decode("utf-8")
+        _invalidate_elements_cache()
+        return await _screenshot_b64()
     except Exception as e:
         return f"Error: {e}"
 
@@ -283,8 +289,8 @@ async def browser_go_back():
         if page_instance is None:
             return "Error: No browser open."
         await page_instance.go_back()
-        screenshot = await page_instance.screenshot()
-        return base64.b64encode(screenshot).decode("utf-8")
+        _invalidate_elements_cache()
+        return await _screenshot_b64()
     except Exception as e:
         return f"Error: {e}"
     
