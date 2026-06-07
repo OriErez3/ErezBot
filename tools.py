@@ -77,14 +77,20 @@ def read_file(file_path: str) -> str:
     except Exception as e:
         return f"Error: {e}"
 
-def write_file(path: str, content: str) -> str:
+def write_file(path: str, content: str, binary: bool = False) -> str:
     try:
-        with open(path, "w", encoding="utf-8") as file:
-            file.write(content)
+        if binary:
+            with open(path, "wb") as f:
+                f.write(base64.b64decode(content))
+        else:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(content)
         return "Successfully written!"
     except Exception as e:
         return f"Error: {e}"
-    
+
+
+
 def find_file(filename: str) -> str:
     import os
     search_paths = [
@@ -129,20 +135,23 @@ def web_search(query: str) -> str:
 playwright_instance = None
 browser_instance = None
 page_instance = None
+current_url = ""
 
 async def browser_navigate(url: str) -> str:
-    global playwright_instance,browser_instance, page_instance
+    global playwright_instance,browser_instance, page_instance, current_url
     try:
         if browser_instance is None:
             playwright_instance = await async_playwright().start()
             browser_instance = await playwright_instance.chromium.launch(headless=False, args=["--disable-blink-features=AutomationControlled"])
             page_instance = await browser_instance.new_page(viewport={"width": 1280, "height": 720})
         await page_instance.goto(url)
+        current_url = page_instance.url
         screenshot = await page_instance.screenshot()
         return base64.b64encode(screenshot).decode("utf-8")
     except Exception as e:
         return f"Error: {e}"
-
+def browser_current_url() -> str:
+    return current_url if current_url else "No page open"
 
 async def browser_screenshot() -> str:
     global page_instance
@@ -218,6 +227,7 @@ async def browser_click_element(index: int) -> str:
             return "Error: No browser open."
         
         el = elements_cache.get(index)
+        print(f"Clicking element {index}: {el}")
         if el is None:
             return "Error: Element not found. Run browser_get_elements first."
         
@@ -277,3 +287,4 @@ async def browser_go_back():
         return base64.b64encode(screenshot).decode("utf-8")
     except Exception as e:
         return f"Error: {e}"
+    

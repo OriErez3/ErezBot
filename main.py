@@ -103,7 +103,7 @@ tools = types.Tool(
             ),
         types.FunctionDeclaration(
             name="write_file",
-            description="Writes a file to whatever path is inputted. Takes two inputs, the path, and the content of the file. ",
+            description="Writes a file to whatever path is inputted. Takes three inputs, the path, the content of the file, and whether the file in binary or not",
             parameters=types.Schema(
                 type=types.Type.OBJECT,
                 properties={
@@ -114,6 +114,10 @@ tools = types.Tool(
                     "content": types.Schema(
                         type=types.Type.STRING,
                         description="The content of whats in the file."
+                    ),
+                    "binary": types.Schema(
+                        type=types.Type.BOOLEAN,
+                        description="Determines whether the content is binary or not."
                     )
                 },
                 required=["path","content"]
@@ -267,7 +271,14 @@ tools = types.Tool(
             parameters=types.Schema(
                 type=types.Type.OBJECT,
                 properties={}         
-            ))
+            )),
+            types.FunctionDeclaration(
+            name="browser_current_url",
+            description="Returns the current browser URL. Use to see if you actually need to change URLs.",
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={}         
+            )),
             ])
             
 
@@ -277,20 +288,23 @@ tools = types.Tool(
 #Test to make sure everything is working
 async def start(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Hello! I'm your Google AI assistant.") # type: ignore
+##- Username: {username}
+#- Current directory: {cwd}
+system_instruction = f"""You are a personal AI assistant. Be helpful and concise.
 
-system_instruction = f"""You are a personal AI assistant. Be helpful, conversational, and concise.
-            Whenever using any tools, keep in mind you are on {os_name}, so use the right syntax.  
+System info:
+- OS: {os_name}
 
-            Only use tools when necessary. For normal conversation just respond naturally.
-            If you can't find a file, please ask the user for the directory. If it's an important directory be sure to save it to memory. 
-            After using any tool, always follow up with a direct response to the user's original message.
-            For anything related to the browser, the browser viewport is always 1280x720.
-            For most things related to the browser, don't use browser_click, or browser_screenshot. Try to use browser_screenshot_annotated, and browser_click_element. Use browser_click and browser_screenshot as a fallback if needed.
-            When completing browser tasks:
-- Never give up until you have actually tried every available action
-- Do not assume you need additional information unless you have navigated to a page that explicitly asks for it
-- If you think you need details, first check the current page by taking a screenshot or getting elements
-- Only ask the user for help if you are truly stuck after exhausting all options"""
+
+Tool rules:
+- Use save_memory for important user facts, delete_memory when outdated, read_memory to recall facts
+- Use write_file, read_file, list_directory for file operations. Only use run_shell when explicitly asked
+- Never give up on a task without actually attempting it first
+- Browser: only call browser_navigate for new URLs, never to save files
+- Browser: always call browser_get_elements before deciding you cannot complete a task
+- Browser: use write_file to save any content to disk
+- After every browser action check the result before deciding what to do next
+- Only ask the user for help if truly stuck after exhausting all options"""
 #Function to handle messages. Used the most often. 
 
 tool_dict = {
@@ -310,7 +324,9 @@ tool_dict = {
     "browser_scroll": t.browser_scroll,
     "browser_get_elements": t.browser_get_elements,
     "browser_click_element" : t.browser_click_element,
-    "browser_go_back": t.browser_go_back
+    "browser_go_back": t.browser_go_back,
+    "browser_current_url": t.browser_current_url,
+    
 }
 screenshot_tools = {"browser_navigate", "browser_screenshot", "browser_click", "browser_type", "browser_scroll", "browser_click_element", "browser_go_back"}
 async def respond(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE):
@@ -349,7 +365,6 @@ async def respond(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE):
                     try:
                         if inspect.iscoroutinefunction(tool_dict[tool_name]):
                             result = await tool_dict[tool_name](**func.args) #Executes the tool function with the provided arguments and gets the result
-                            print(tool_name)
                         else:
                             result = tool_dict[tool_name](**func.args)
                     except Exception as e:
