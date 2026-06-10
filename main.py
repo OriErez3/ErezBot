@@ -288,15 +288,18 @@ tools = types.Tool(
 
 
 #Test to make sure everything is working
-async def start(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE):
+async def start(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text("Hello! I'm your Google AI assistant.") # type: ignore
 ##- Username: {username}
 #- Current directory: {cwd}
-system_instruction = f"""You are a personal AI assistant. Be helpful and concise.
+def build_system_instruction(memory: str) -> str:
+    return f"""You are a personal AI assistant. Be helpful and concise.
 
 System info:
 - OS: {os_name}
 
+Saved memory about the user:
+{memory}
 
 Tool rules:
 - Use save_memory for important user facts, delete_memory when outdated, read_memory to recall facts
@@ -307,7 +310,7 @@ Tool rules:
 - Browser: use write_file to save any content to disk
 - After every browser action check the result before deciding what to do next
 - Only ask the user for help if truly stuck after exhausting all options"""
-#Function to handle messages. Used the most often. 
+#Function to handle messages. Used the most often.
 
 tool_dict = {
     "run_shell": t.run_shell,
@@ -331,17 +334,17 @@ tool_dict = {
     
 }
 screenshot_tools = {"browser_navigate", "browser_screenshot", "browser_click", "browser_type", "browser_scroll", "browser_click_element", "browser_go_back"}
-async def respond(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE):
+async def respond(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
         user_message = update.message.text # type: ignore
-        memory = read_memory() #Reads the bot's memory. This memory stores important information only. 
+        memory = read_memory() #Reads the bot's memory. This memory stores important information only.
         conversation = read_conversation(30) #Reads the last 7 messages from the conversation history to provide context for the AI's response
         contents=[types.Content(role=msg["role"], parts=[types.Part(text=msg["parts"][0])]) for msg in conversation] #Converts the conversation history into the correct format for Gemini API
         chat = client.chats.create(
                 model="gemini-3.1-flash-lite",
-                history=contents, #type: ignore 
+                history=contents, #type: ignore
                 config=types.GenerateContentConfig(tools=[tools],
-                    system_instruction=system_instruction
+                    system_instruction=build_system_instruction(memory)
             ),)
         add_to_conversation("user", user_message)#type: ignore #Saves the user's message to the conversation history in the database
         response = chat.send_message(user_message)
@@ -430,7 +433,7 @@ async def respond(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE):
    
     
    
-async def clear(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE):
+async def clear(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     database.clear_conversation()
     await update.message.reply_text("Conversation cleared!") #type: ignore      
         
