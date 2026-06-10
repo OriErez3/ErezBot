@@ -14,6 +14,10 @@ import base64
 import logging
 #type: ignore
 load_dotenv()
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
 logger = logging.getLogger(__name__)
 #Loads the environment variables for the APIs
 telegram_key = os.getenv("TELEGRAM_TOKEN")
