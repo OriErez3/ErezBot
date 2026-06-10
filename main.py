@@ -321,6 +321,7 @@ tool_dict = {
     "delete_memory": t.delete_memory,
     "read_memory": t.read_memory,
     "find_file": t.find_file,
+    "move_file": t.move_file,
     "web_search": t.web_search,
     "browser_navigate": t.browser_navigate,
     "browser_screenshot": t.browser_screenshot,
