@@ -142,6 +142,9 @@ def web_search(query: str) -> str:
 
 # Browser things
 
+def _normalize_url(url: str) -> str:
+    return url.strip().rstrip('/')
+
 class BrowserSession:
     """Encapsulates a single Playwright browser/page and the element index cache for it."""
 
@@ -149,7 +152,6 @@ class BrowserSession:
         self._playwright: Optional[Playwright] = None
         self._browser: Optional[Browser] = None
         self.page: Optional[Page] = None
-        self.current_url: str = ""
         self.elements_cache: dict[int, dict] = {}
 
     async def _ensure_page(self) -> Page:
@@ -182,11 +184,12 @@ class BrowserSession:
             pass
         await self.page.wait_for_timeout(300)
 
-    async def navigate(self, url: str) -> str:
+    async def navigate(self, url: str) -> Union[str, tuple[str, str]]:
         try:
             page = await self._ensure_page()
+            if _normalize_url(url) == _normalize_url(page.url):
+                return await self._screenshot_b64(), "Already on this page - navigation skipped to avoid losing progress."
             await page.goto(url)
-            self.current_url = page.url
             self._invalidate_elements_cache()
             await self._settle()
             return await self._screenshot_b64()
@@ -194,7 +197,7 @@ class BrowserSession:
             return f"Error: {e}"
 
     def get_current_url(self) -> str:
-        return self.current_url if self.current_url else "No page open"
+        return self.page.url if self.page else "No page open"
 
     async def screenshot(self) -> str:
         if self.page is None:
@@ -329,7 +332,7 @@ class BrowserSession:
 
 _browser_session = BrowserSession()
 
-async def browser_navigate(url: str) -> str:
+async def browser_navigate(url: str) -> Union[str, tuple[str, str]]:
     return await _browser_session.navigate(url)
 
 def browser_current_url() -> str:

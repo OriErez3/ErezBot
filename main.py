@@ -310,6 +310,7 @@ Tool rules:
 - Use write_file, read_file, list_directory for file operations. Only use run_shell when explicitly asked
 - Never give up on a task without actually attempting it first
 - Browser: only call browser_navigate for new URLs, never to save files
+- Browser: re-navigating to the page you're already on is now a safe no-op (it won't reload), but prefer browser_get_elements/browser_screenshot to inspect the current page instead of calling browser_navigate again
 - Browser: always call browser_get_elements before deciding you cannot complete a task
 - Browser: use write_file to save any content to disk
 - After every browser action check the result before deciding what to do next
