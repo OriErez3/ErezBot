@@ -130,7 +130,7 @@ def web_search(query: str) -> str:
         response = tav_client.search(query=query, max_results=5, include_answer=True)
         answer = response.get("answer", "")
         results = "\n\n".join(
-            f"Title: {r['title']}\nURL: {r['url']}\nContent: {r['content']}"
+            f"Title: {r['title']}\nURL: {r['url']}\nContent: {r['content'][:500]}"
             for r in response["results"]
         )
         if answer:
@@ -233,11 +233,16 @@ class BrowserSession:
             self.elements_cache.clear()
             for el in elements:
                 self.elements_cache[el['index']] = el
-            # Build element map
+            # Build element map, capped to avoid flooding context on pages with huge DOMs
+            MAX_ELEMENTS = 80
+            shown_elements = elements[:MAX_ELEMENTS]
             element_map = "\n".join([
                 f"[{el['index']}] {el['tag']}: '{el['text']}' at ({el['x']:.0f}, {el['y']:.0f})"
-                for el in elements
+                for el in shown_elements
             ])
+            remaining = len(elements) - len(shown_elements)
+            if remaining > 0:
+                element_map += f"\n... and {remaining} more elements not shown."
 
             if not screenshot:
                 return element_map

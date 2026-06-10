@@ -12,6 +12,7 @@ import platform
 import inspect
 import base64
 import logging
+import re
 #type: ignore
 load_dotenv()
 logging.basicConfig(
@@ -314,7 +315,9 @@ Tool rules:
 - Browser: always call browser_get_elements before deciding you cannot complete a task
 - Browser: use write_file to save any content to disk
 - After every browser action check the result before deciding what to do next
-- Only ask the user for help if truly stuck after exhausting all options"""
+- Only ask the user for help if truly stuck after exhausting all options
+- Always reply to the user in your own clear words. Never paste raw HTML, element-map/tool output, or URLs with tracking parameters directly into your reply
+- If the user changes topic or asks you to abandon the current task, fully switch focus to their new request and disregard unrelated state or results from the abandoned task"""
 #Function to handle messages. Used the most often.
 
 tool_dict = {
@@ -340,6 +343,9 @@ tool_dict = {
     
 }
 screenshot_tools = {"browser_navigate", "browser_screenshot", "browser_click", "browser_type", "browser_scroll", "browser_click_element", "browser_go_back"}
+MAX_TOOL_ITERATIONS = 12
+# Matches raw element-map lines (e.g. "[12] a: 'text' at (100, 200)") or pasted-HTML fragments
+INVALID_REPLY_PATTERN = re.compile(r"^\[\d+\]\s+\w+:|target=\"_blank\"|utm_source=")
 async def respond(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
         user_message = update.message.text # type: ignore
@@ -354,14 +360,26 @@ async def respond(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE) -
             ),)
         add_to_conversation("user", user_message)#type: ignore #Saves the user's message to the conversation history in the database
         response = chat.send_message(user_message)
-        #Everything below is for handling tool calls. 
+        #Everything below is for handling tool calls.
         seen_calls = set()
         give_up = False
+        iteration_count = 0
         while response.function_calls and not give_up: #Checks if the AI called any tools in its response
             for func in response.function_calls: #If it did, it executes the tool calls and gets the results
                 call_key = f"{func.name}_{func.args}"
                 tool_name = func.name
                 logger.debug("Tool call: %s", tool_name)
+
+                iteration_count += 1
+                if iteration_count > MAX_TOOL_ITERATIONS:
+                    result = "You've taken too many actions on this task. Stop here and respond to the user now, summarizing what you've done so far and what's left."
+                    response = chat.send_message(types.Part(
+                        function_response=types.FunctionResponse(
+                    name=tool_name,
+                    id=func.id,
+                    response={"result": result})))
+                    give_up = True
+                    break
 
                 if call_key in seen_calls:
                     result = "This approach isn't working. Tell the user you're unable to complete the task and ask them for more information."
@@ -430,6 +448,9 @@ async def respond(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE) -
             except (IndexError, AttributeError):
                 pass
             logger.warning("Model returned an empty response (finish_reason=%s)", finish_reason)
+            final_text = "Sorry, I couldn't come up with a response there. Could you try rephrasing?"
+        elif INVALID_REPLY_PATTERN.search(final_text):
+            logger.warning("Model returned an invalid/raw reply, discarding: %r", final_text)
             final_text = "Sorry, I couldn't come up with a response there. Could you try rephrasing?"
         add_to_conversation("model", final_text) #Saves the AI's response to the conversation history in the database
         await update.message.reply_text(final_text) #Sends the AI's response back to the user on Telegram
