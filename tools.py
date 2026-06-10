@@ -2,7 +2,7 @@ import logging
 import subprocess
 from database import add_to_memory
 from database import read_memory as read_memory_db
-import sqlite3
+from database import delete_memory as delete_memory_db
 import os
 import shutil
 from dotenv import load_dotenv
@@ -22,8 +22,6 @@ from typing import Optional, Union
 load_dotenv()
 logger = logging.getLogger(__name__)
 tav_key = os.getenv("TAVILY_KEY")
-conn = sqlite3.connect("memory.db")
-cursor = conn.cursor()
 tav_client = TavilyClient(tav_key)
 
 def run_shell(command: str) -> str:
@@ -45,10 +43,7 @@ def save_memory(key: str, value: str) -> str:
     return f"Memory saved: {key} = {value}"
 
 def delete_memory(key: str) -> str:
-    cursor.execute('''SELECT key FROM memory WHERE key = ?''', (key,))
-    if cursor.fetchone():
-        cursor.execute('''DELETE FROM memory WHERE key = ?''', (key,))
-        conn.commit()
+    if delete_memory_db(key):
         return f"Memory deleted: {key}"
     return f"Memory not found: {key}"
 

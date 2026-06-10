@@ -5,7 +5,7 @@ import os
 import asyncio
 from google import genai
 from google.genai import types
-from database import add_to_conversation, read_conversation, read_memory, add_to_memory
+from database import add_to_conversation, read_conversation, read_memory
 import tools as t
 import database
 import platform
@@ -13,6 +13,7 @@ import inspect
 import base64
 import logging
 import re
+from typing import Any
 #type: ignore
 load_dotenv()
 logging.basicConfig(
@@ -297,7 +298,7 @@ async def start(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await update.message.reply_text("Hello! I'm your Google AI assistant.") # type: ignore
 ##- Username: {username}
 #- Current directory: {cwd}
-def build_system_instruction(memory: str) -> str:
+def build_system_instruction(memory: str, browser_url: str) -> str:
     return f"""You are a personal AI assistant. Be helpful and concise.
 
 System info:
@@ -305,6 +306,10 @@ System info:
 
 Saved memory about the user:
 {memory}
+
+Browser state:
+- Current browser page: {browser_url}
+- This reflects reality right now, even if earlier conversation mentions a different page. Trust this over anything you previously said about the browser.
 
 Tool rules:
 - Use save_memory for important user facts, delete_memory when outdated, read_memory to recall facts
@@ -314,6 +319,8 @@ Tool rules:
 - Browser: re-navigating to the page you're already on is now a safe no-op (it won't reload), but prefer browser_get_elements/browser_screenshot to inspect the current page instead of calling browser_navigate again
 - Browser: always call browser_get_elements before deciding you cannot complete a task
 - Browser: use write_file to save any content to disk
+- Browser: for a new or ambiguous request, check "Current browser page" above first, and use browser_get_elements/browser_screenshot to see what's actually on screen before acting - don't assume you're still on a page from earlier conversation
+- Browser: never call browser_go_back unless the user explicitly asks to go back; it can navigate away from the page you're supposed to be working on
 - After every browser action check the result before deciding what to do next
 - Only ask the user for help if truly stuck after exhausting all options
 - Always reply to the user in your own clear words. Never paste raw HTML, element-map/tool output, or URLs with tracking parameters directly into your reply
@@ -346,112 +353,144 @@ screenshot_tools = {"browser_navigate", "browser_screenshot", "browser_click", "
 MAX_TOOL_ITERATIONS = 12
 # Matches raw element-map lines (e.g. "[12] a: 'text' at (100, 200)") or pasted-HTML fragments
 INVALID_REPLY_PATTERN = re.compile(r"^\[\d+\]\s+\w+:|target=\"_blank\"|utm_source=")
+
+def _validate_tool_registrations() -> None:
+    declared = {fd.name for fd in tools.function_declarations} #type: ignore
+    registered = set(tool_dict)
+    if declared != registered:
+        raise RuntimeError(
+            f"Tool registration mismatch - declared only: {declared - registered}, "
+            f"tool_dict only: {registered - declared}"
+        )
+    if not screenshot_tools <= registered:
+        raise RuntimeError(f"screenshot_tools has unknown tools: {screenshot_tools - registered}")
+
+_validate_tool_registrations()
+
+async def _execute_tool(tool_name: str, args: dict) -> Any:
+    """Looks up and runs a tool by name, returning its result (or an error string)."""
+    if tool_name not in tool_dict:
+        return f'Tool: {tool_name} not found'
+    try:
+        if inspect.iscoroutinefunction(tool_dict[tool_name]):
+            return await tool_dict[tool_name](**args)
+        return tool_dict[tool_name](**args)
+    except Exception as e:
+        result = f"Error executing {tool_name}: {e}"
+        logger.warning(result)
+        return result
+
+def _send_tool_result(chat: Any, func: Any, tool_name: str, result: Any) -> Any:
+    """Sends a tool's result back to the chat, attaching an image if the result includes one."""
+    if isinstance(result, tuple):
+        # Has both image and element map
+        image_b64, element_map = result
+        image_bytes = base64.b64decode(image_b64)
+        return chat.send_message([
+            types.Part(
+                function_response=types.FunctionResponse(
+                    name=tool_name,
+                    id=func.id,
+                    response={"result": element_map}
+                )
+            ),
+            types.Part.from_bytes(data=image_bytes, mime_type="image/png")
+        ])
+    if tool_name in screenshot_tools and not result.startswith("Error"):
+        image_bytes = base64.b64decode(result)
+        return chat.send_message([
+            types.Part(
+                function_response=types.FunctionResponse(
+                    name=tool_name,
+                    id=func.id,
+                    response={"result": "Screenshot taken successfully"}
+                )
+            ),
+            types.Part.from_bytes(data=image_bytes, mime_type="image/png")
+        ])
+    return chat.send_message(types.Part(
+        function_response=types.FunctionResponse(
+            name=tool_name,
+            id=func.id,
+            response={"result": result}
+        )
+    ))
+
+async def _run_tool_loop(chat: Any, response: Any) -> tuple[Any, bool]:
+    """Repeatedly executes tool calls requested by the model until it stops calling tools,
+    a duplicate call is detected, or MAX_TOOL_ITERATIONS is exceeded. Returns the final
+    response and whether the loop gave up early."""
+    seen_calls = set()
+    give_up = False
+    iteration_count = 0
+    while response.function_calls and not give_up: #Checks if the AI called any tools in its response
+        for func in response.function_calls: #If it did, it executes the tool calls and gets the results
+            call_key = f"{func.name}_{func.args}"
+            tool_name = func.name
+            logger.debug("Tool call: %s", tool_name)
+
+            iteration_count += 1
+            if iteration_count > MAX_TOOL_ITERATIONS:
+                result = "You've taken too many actions on this task. Stop here and respond to the user now, summarizing what you've done so far and what's left."
+                response = chat.send_message(types.Part(
+                    function_response=types.FunctionResponse(
+                name=tool_name,
+                id=func.id,
+                response={"result": result})))
+                give_up = True
+                break
+
+            if call_key in seen_calls:
+                result = "This approach isn't working. Tell the user you're unable to complete the task and ask them for more information."
+                response = chat.send_message(types.Part(
+                    function_response=types.FunctionResponse(
+                name=tool_name,
+                id=func.id,
+                response={"result": result})))
+                give_up = True
+                break
+            seen_calls.add(call_key)
+
+            result = await _execute_tool(tool_name, func.args)
+            response = _send_tool_result(chat, func, tool_name, result)
+    return response, give_up
+
+def _finalize_reply(response: Any, give_up: bool) -> str:
+    """Validates the model's final text, substituting a friendly message if it's empty or
+    looks like raw tool/HTML output that shouldn't be shown to the user."""
+    final_text = response.text #type: ignore
+    if not final_text or not final_text.strip():
+        finish_reason = None
+        try:
+            finish_reason = response.candidates[0].finish_reason #type: ignore
+        except (IndexError, AttributeError):
+            pass
+        logger.warning("Model returned an empty response (finish_reason=%s, give_up=%s)", finish_reason, give_up)
+        if give_up:
+            return "I got stuck while working on that and wasn't able to finish. Could you give me more guidance, or try a different approach?"
+        return "Sorry, I couldn't come up with a response there. Could you try rephrasing?"
+    if INVALID_REPLY_PATTERN.search(final_text):
+        logger.warning("Model returned an invalid/raw reply, discarding: %r", final_text)
+        return "Sorry, I couldn't come up with a response there. Could you try rephrasing?"
+    return final_text
+
 async def respond(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
         user_message = update.message.text # type: ignore
         memory = read_memory() #Reads the bot's memory. This memory stores important information only.
-        conversation = read_conversation(30) #Reads the last 7 messages from the conversation history to provide context for the AI's response
+        conversation = read_conversation(30) #Reads the recent conversation history to provide context for the AI's response
         contents=[types.Content(role=msg["role"], parts=[types.Part(text=msg["parts"][0])]) for msg in conversation] #Converts the conversation history into the correct format for Gemini API
+        browser_url = t.browser_current_url() #Grounds the model in the browser's actual current page, regardless of what past conversation text says
         chat = client.chats.create(
-                model="gemini-3.1-flash-lite",
+                model="gemini-3.5-flash",
                 history=contents, #type: ignore
                 config=types.GenerateContentConfig(tools=[tools],
-                    system_instruction=build_system_instruction(memory)
+                    system_instruction=build_system_instruction(memory, browser_url)
             ),)
         add_to_conversation("user", user_message)#type: ignore #Saves the user's message to the conversation history in the database
         response = chat.send_message(user_message)
-        #Everything below is for handling tool calls.
-        seen_calls = set()
-        give_up = False
-        iteration_count = 0
-        while response.function_calls and not give_up: #Checks if the AI called any tools in its response
-            for func in response.function_calls: #If it did, it executes the tool calls and gets the results
-                call_key = f"{func.name}_{func.args}"
-                tool_name = func.name
-                logger.debug("Tool call: %s", tool_name)
-
-                iteration_count += 1
-                if iteration_count > MAX_TOOL_ITERATIONS:
-                    result = "You've taken too many actions on this task. Stop here and respond to the user now, summarizing what you've done so far and what's left."
-                    response = chat.send_message(types.Part(
-                        function_response=types.FunctionResponse(
-                    name=tool_name,
-                    id=func.id,
-                    response={"result": result})))
-                    give_up = True
-                    break
-
-                if call_key in seen_calls:
-                    result = "This approach isn't working. Tell the user you're unable to complete the task and ask them for more information."
-                    response = chat.send_message(types.Part(
-                        function_response=types.FunctionResponse(
-                    name=tool_name,
-                    id=func.id,
-                    response={"result": result})))
-                    give_up = True
-                    break
-                seen_calls.add(call_key)
-
-                if tool_name in tool_dict:
-                    try:
-                        if inspect.iscoroutinefunction(tool_dict[tool_name]):
-                            result = await tool_dict[tool_name](**func.args) #Executes the tool function with the provided arguments and gets the result
-                        else:
-                            result = tool_dict[tool_name](**func.args)
-                    except Exception as e:
-                        result = f"Error executing {tool_name}: {e}"
-                        logger.warning(result)
-                else:
-                    result = f'Tool: {tool_name} not found'
-                if isinstance(result, tuple):
-                    # Has both image and element map
-                    image_b64, element_map = result
-                    image_bytes = base64.b64decode(image_b64)
-                    response = chat.send_message([
-                        types.Part(
-                            function_response=types.FunctionResponse(
-                                name=tool_name,
-                                id=func.id,
-                                response={"result": element_map}
-                            )
-                        ),
-                        types.Part.from_bytes(data=image_bytes, mime_type="image/png")
-                    ])
-                elif tool_name in screenshot_tools and not result.startswith("Error"):
-                    image_bytes = base64.b64decode(result)
-                    response = chat.send_message([types.Part(
-                        function_response=types.FunctionResponse(
-                            name=tool_name,
-                            id=func.id,
-                            response = {"result": "Screenshot taken successfully"}
-                        )
-
-                    ),
-                    types.Part.from_bytes(
-                        data=image_bytes,
-                        mime_type="image/png"
-                    )
-                    ])
-                else:
-                    response = chat.send_message(types.Part(
-                function_response=types.FunctionResponse(
-                    name=tool_name,
-                    id=func.id,
-                    response={"result": result}
-                )
-            ))
-        final_text = response.text #type: ignore
-        if not final_text or not final_text.strip():
-            finish_reason = None
-            try:
-                finish_reason = response.candidates[0].finish_reason #type: ignore
-            except (IndexError, AttributeError):
-                pass
-            logger.warning("Model returned an empty response (finish_reason=%s)", finish_reason)
-            final_text = "Sorry, I couldn't come up with a response there. Could you try rephrasing?"
-        elif INVALID_REPLY_PATTERN.search(final_text):
-            logger.warning("Model returned an invalid/raw reply, discarding: %r", final_text)
-            final_text = "Sorry, I couldn't come up with a response there. Could you try rephrasing?"
+        response, give_up = await _run_tool_loop(chat, response) #Executes any tool calls the model requested
+        final_text = _finalize_reply(response, give_up)
         add_to_conversation("model", final_text) #Saves the AI's response to the conversation history in the database
         await update.message.reply_text(final_text) #Sends the AI's response back to the user on Telegram
     except Exception as e:

@@ -48,3 +48,11 @@ def read_memory():
     if not rows:
         return ''
     return "\n".join(f"{row[0]}: {row[1]}" for row in rows)
+
+def delete_memory(key: str) -> bool:
+    cursor.execute('SELECT key FROM memory WHERE key = ?', (key,))
+    if cursor.fetchone():
+        cursor.execute('DELETE FROM memory WHERE key = ?', (key,))
+        conn.commit()
+        return True
+    return False
