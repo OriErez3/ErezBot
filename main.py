@@ -421,8 +421,17 @@ async def respond(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE) -
                     response={"result": result}
                 )
             ))
-        add_to_conversation("model", response.text) #type: ignore #Saves the AI's response to the conversation history in the database
-        await update.message.reply_text(response.text) #type: ignore #Sends the AI's response back to the user on Telegram
+        final_text = response.text #type: ignore
+        if not final_text or not final_text.strip():
+            finish_reason = None
+            try:
+                finish_reason = response.candidates[0].finish_reason #type: ignore
+            except (IndexError, AttributeError):
+                pass
+            logger.warning("Model returned an empty response (finish_reason=%s)", finish_reason)
+            final_text = "Sorry, I couldn't come up with a response there. Could you try rephrasing?"
+        add_to_conversation("model", final_text) #Saves the AI's response to the conversation history in the database
+        await update.message.reply_text(final_text) #Sends the AI's response back to the user on Telegram
     except Exception as e:
         error_message = str(e)
         if "429" in error_message or "quota" in error_message.lower() or "exhausted" in error_message.lower():
