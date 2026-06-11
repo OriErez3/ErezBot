@@ -508,6 +508,13 @@ MAX_TOOL_ITERATIONS = 20
 PERSIST_MAX_TOOL_ITERATIONS = 100
 KEEP_RECENT_SCREENSHOTS = 2
 PERSIST_MODE = False
+CHECKIN_INTERVAL_MINUTES = 60
+CHECKIN_PROMPT = (
+    "[Automated periodic check-in] Use your tools to check for anything time-sensitive or "
+    "noteworthy (e.g. calendar events starting soon, important new emails). If there's "
+    "something worth telling the user, reply with a short message for them. If there's "
+    "nothing noteworthy, reply with exactly: NOTHING_TO_REPORT"
+)
 # Matches raw element-map lines (e.g. "[12] a: 'text' at (100, 200)") or pasted-HTML fragments
 INVALID_REPLY_PATTERN = re.compile(r"^\[\d+\]\s+\w+:|target=\"_blank\"|utm_source=")
 
@@ -718,6 +725,22 @@ async def toggle_persist(update: telegram.Update, context: ContextTypes.DEFAULT_
     else:
         status = "OFF."
     await update.message.reply_text(f"Persistent mode is now {status}") #type: ignore
+
+async def proactive_check(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Periodically asks the model to check for anything noteworthy (emails, calendar events,
+    etc.) and messages the user unprompted if it finds something worth flagging."""
+    chat_id = database.get_setting("chat_id")
+    if not chat_id:
+        return
+    try:
+        final_text, give_up = await _generate_response(CHECKIN_PROMPT)
+    except Exception:
+        logger.exception("Proactive check-in failed")
+        return
+    if give_up or final_text.strip().upper() == "NOTHING_TO_REPORT":
+        return
+    await context.bot.send_message(chat_id=int(chat_id), text=final_text)
+    add_to_conversation("model", final_text)
         
 
 def main() -> None:
@@ -725,6 +748,11 @@ def main() -> None:
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("clear", clear))
     application.add_handler(CommandHandler("persist", toggle_persist))
+    application.job_queue.run_repeating( #type: ignore
+        proactive_check,
+        interval=CHECKIN_INTERVAL_MINUTES * 60,
+        first=CHECKIN_INTERVAL_MINUTES * 60,
+    )
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, respond))
     application.run_polling(allowed_updates=telegram.Update.ALL_TYPES)
 
