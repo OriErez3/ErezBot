@@ -133,6 +133,17 @@ def gmail_send_email(to: str, subject: str, body: str) -> str:
         return f"Error: {e}"
 
 
+def gmail_mark_as_read(message_id: str) -> str:
+    try:
+        service = _gmail()
+        service.users().messages().modify(
+            userId="me", id=message_id, body={"removeLabelIds": ["UNREAD"]}
+        ).execute()
+        return f"Marked message {message_id} as read."
+    except Exception as e:
+        return f"Error: {e}"
+
+
 # Calendar
 
 def calendar_list_events(max_results: int = 10) -> str:

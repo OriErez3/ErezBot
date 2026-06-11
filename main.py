@@ -340,6 +340,19 @@ tools = types.Tool(
                 required=["to", "subject", "body"]
             )),
             types.FunctionDeclaration(
+            name="gmail_mark_as_read",
+            description="Marks a Gmail message as read so it won't show up in 'is:unread' searches again.",
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={
+                    "message_id": types.Schema(
+                        type=types.Type.STRING,
+                        description="The id of the message, from gmail_list_messages."
+                    )
+                },
+                required=["message_id"]
+            )),
+            types.FunctionDeclaration(
             name="calendar_list_events",
             description="Lists the user's upcoming Google Calendar events, soonest first.",
             parameters=types.Schema(
@@ -497,6 +510,7 @@ tool_dict = {
     "gmail_list_messages": gs.gmail_list_messages,
     "gmail_read_message": gs.gmail_read_message,
     "gmail_send_email": gs.gmail_send_email,
+    "gmail_mark_as_read": gs.gmail_mark_as_read,
     "calendar_list_events": gs.calendar_list_events,
     "calendar_create_event": gs.calendar_create_event,
     "drive_list_files": gs.drive_list_files,
@@ -508,12 +522,16 @@ MAX_TOOL_ITERATIONS = 20
 PERSIST_MAX_TOOL_ITERATIONS = 100
 KEEP_RECENT_SCREENSHOTS = 2
 PERSIST_MODE = False
-CHECKIN_INTERVAL_MINUTES = 60
+CHECKIN_INTERVAL_MINUTES = 1  # TODO: revert to 60 after testing proactive check-ins
 CHECKIN_PROMPT = (
-    "[Automated periodic check-in] Use your tools to check for anything time-sensitive or "
-    "noteworthy (e.g. calendar events starting soon, important new emails). If there's "
-    "something worth telling the user, reply with a short message for them. If there's "
-    "nothing noteworthy, reply with exactly: NOTHING_TO_REPORT"
+    "[Automated periodic check-in] Use gmail_list_messages with query 'is:unread' to check for "
+    "important new emails, and calendar_list_events to check for events starting soon. Compare "
+    "against what you've already told the user in the recent conversation above - do not repeat "
+    "something you already flagged unless there's new or materially changed information (e.g. "
+    "an event is now starting much sooner, or a new reply came in). If there's something worth "
+    "telling the user, reply with a short message for them, and call gmail_mark_as_read on each "
+    "email you report. If there's nothing new and noteworthy, reply with exactly: "
+    "NOTHING_TO_REPORT"
 )
 # Matches raw element-map lines (e.g. "[12] a: 'text' at (100, 200)") or pasted-HTML fragments
 INVALID_REPLY_PATTERN = re.compile(r"^\[\d+\]\s+\w+:|target=\"_blank\"|utm_source=")
