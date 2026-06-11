@@ -7,12 +7,14 @@ from google import genai
 from google.genai import types
 from database import add_to_conversation, read_conversation, read_memory
 import tools as t
+import google_services as gs
 import database
 import platform
 import inspect
 import base64
 import logging
 import re
+from datetime import datetime
 from typing import Any
 #type: ignore
 load_dotenv()
@@ -285,7 +287,144 @@ tools = types.Tool(
             description="Returns the current browser URL. Use to see if you actually need to change URLs.",
             parameters=types.Schema(
                 type=types.Type.OBJECT,
-                properties={}         
+                properties={}
+            )),
+            types.FunctionDeclaration(
+            name="gmail_list_messages",
+            description="Lists recent Gmail messages, optionally filtered with a Gmail search query. Returns each message's id, sender, subject, date, and a snippet. Use the id with gmail_read_message to see the full message.",
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={
+                    "max_results": types.Schema(
+                        type=types.Type.INTEGER,
+                        description="Maximum number of messages to return. Defaults to 10."
+                    ),
+                    "query": types.Schema(
+                        type=types.Type.STRING,
+                        description="Optional Gmail search query, e.g. 'is:unread' or 'from:someone@example.com'."
+                    )
+                }
+            )),
+            types.FunctionDeclaration(
+            name="gmail_read_message",
+            description="Reads the full content (sender, subject, date, body) of a Gmail message by id.",
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={
+                    "message_id": types.Schema(
+                        type=types.Type.STRING,
+                        description="The id of the message, from gmail_list_messages."
+                    )
+                },
+                required=["message_id"]
+            )),
+            types.FunctionDeclaration(
+            name="gmail_send_email",
+            description="Sends an email from the user's Gmail account.",
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={
+                    "to": types.Schema(
+                        type=types.Type.STRING,
+                        description="Recipient email address."
+                    ),
+                    "subject": types.Schema(
+                        type=types.Type.STRING,
+                        description="Email subject line."
+                    ),
+                    "body": types.Schema(
+                        type=types.Type.STRING,
+                        description="Email body text."
+                    )
+                },
+                required=["to", "subject", "body"]
+            )),
+            types.FunctionDeclaration(
+            name="calendar_list_events",
+            description="Lists the user's upcoming Google Calendar events, soonest first.",
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={
+                    "max_results": types.Schema(
+                        type=types.Type.INTEGER,
+                        description="Maximum number of events to return. Defaults to 10."
+                    )
+                }
+            )),
+            types.FunctionDeclaration(
+            name="calendar_create_event",
+            description="Creates an event on the user's primary Google Calendar. Use the current date/time from the system info to resolve relative dates like 'tomorrow' or 'next Monday'.",
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={
+                    "summary": types.Schema(
+                        type=types.Type.STRING,
+                        description="Event title."
+                    ),
+                    "start": types.Schema(
+                        type=types.Type.STRING,
+                        description="Start time as an RFC3339 datetime with offset, e.g. 2026-06-12T15:00:00-04:00."
+                    ),
+                    "end": types.Schema(
+                        type=types.Type.STRING,
+                        description="End time as an RFC3339 datetime with offset, e.g. 2026-06-12T16:00:00-04:00."
+                    ),
+                    "description": types.Schema(
+                        type=types.Type.STRING,
+                        description="Optional event description."
+                    )
+                },
+                required=["summary", "start", "end"]
+            )),
+            types.FunctionDeclaration(
+            name="drive_list_files",
+            description="Lists files in the user's Google Drive, most recently modified first, optionally filtered with a Drive search query.",
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={
+                    "query": types.Schema(
+                        type=types.Type.STRING,
+                        description="Optional Drive search query, e.g. \"name contains 'budget'\"."
+                    ),
+                    "max_results": types.Schema(
+                        type=types.Type.INTEGER,
+                        description="Maximum number of files to return. Defaults to 10."
+                    )
+                }
+            )),
+            types.FunctionDeclaration(
+            name="drive_read_file",
+            description="Reads the text content of a file in the user's Google Drive by id (Google Docs/Sheets/Slides are exported as text/CSV).",
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={
+                    "file_id": types.Schema(
+                        type=types.Type.STRING,
+                        description="The id of the file, from drive_list_files."
+                    )
+                },
+                required=["file_id"]
+            )),
+            types.FunctionDeclaration(
+            name="drive_upload_file",
+            description="Creates a new file with the given text content in the user's Google Drive.",
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={
+                    "name": types.Schema(
+                        type=types.Type.STRING,
+                        description="Name for the new file."
+                    ),
+                    "content": types.Schema(
+                        type=types.Type.STRING,
+                        description="Text content of the file."
+                    ),
+                    "mime_type": types.Schema(
+                        type=types.Type.STRING,
+                        description="MIME type of the content. Defaults to text/plain."
+                    )
+                },
+                required=["name", "content"]
             )),
             ])
             
@@ -298,11 +437,12 @@ async def start(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await update.message.reply_text("Hello! I'm your Google AI assistant.") # type: ignore
 ##- Username: {username}
 #- Current directory: {cwd}
-def build_system_instruction(memory: str, browser_url: str) -> str:
+def build_system_instruction(memory: str, browser_url: str, now: str) -> str:
     return f"""You are a personal AI assistant. Be helpful and concise.
 
 System info:
 - OS: {os_name}
+- Current date/time: {now}
 
 Saved memory about the user:
 {memory}
@@ -323,6 +463,9 @@ Tool rules:
 - Browser: never call browser_go_back unless the user explicitly asks to go back; it can navigate away from the page you're supposed to be working on
 - Browser: when typing into a search bar, form field, or game input that should be submitted (e.g. a Wordle guess), call browser_type with press_enter=True instead of typing and then taking a separate action to submit
 - After every browser action check the result before deciding what to do next
+- Google account: use gmail_* tools to read/search/send email. Confirm with the user before sending an email unless they explicitly asked you to send it
+- Google account: use calendar_* tools to view and create events. Resolve relative dates (e.g. "tomorrow", "next Monday") using the current date/time above
+- Google account: use drive_* tools for files in the user's Google Drive - this is separate from the local filesystem tools
 - Only ask the user for help if truly stuck after exhausting all options
 - Always reply to the user in your own clear words. Never paste raw HTML, element-map/tool output, or URLs with tracking parameters directly into your reply
 - If the user changes topic or asks you to abandon the current task, fully switch focus to their new request and disregard unrelated state or results from the abandoned task"""
@@ -348,7 +491,14 @@ tool_dict = {
     "browser_click_element" : t.browser_click_element,
     "browser_go_back": t.browser_go_back,
     "browser_current_url": t.browser_current_url,
-    
+    "gmail_list_messages": gs.gmail_list_messages,
+    "gmail_read_message": gs.gmail_read_message,
+    "gmail_send_email": gs.gmail_send_email,
+    "calendar_list_events": gs.calendar_list_events,
+    "calendar_create_event": gs.calendar_create_event,
+    "drive_list_files": gs.drive_list_files,
+    "drive_read_file": gs.drive_read_file,
+    "drive_upload_file": gs.drive_upload_file,
 }
 screenshot_tools = {"browser_navigate", "browser_screenshot", "browser_click", "browser_type", "browser_scroll", "browser_click_element", "browser_go_back"}
 MAX_TOOL_ITERATIONS = 20
@@ -501,11 +651,12 @@ async def respond(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE) -
         conversation = read_conversation(30) #Reads the recent conversation history to provide context for the AI's response
         contents=[types.Content(role=msg["role"], parts=[types.Part(text=msg["parts"][0])]) for msg in conversation] #Converts the conversation history into the correct format for Gemini API
         browser_url = t.browser_current_url() #Grounds the model in the browser's actual current page, regardless of what past conversation text says
+        now = datetime.now().astimezone().isoformat() #Grounds the model in the current date/time for resolving relative dates (e.g. calendar events)
         chat = client.chats.create(
                 model="gemini-3.1-flash-lite",
                 history=contents, #type: ignore
                 config=types.GenerateContentConfig(tools=[tools],
-                    system_instruction=build_system_instruction(memory, browser_url)
+                    system_instruction=build_system_instruction(memory, browser_url, now)
             ),)
         add_to_conversation("user", user_message)#type: ignore #Saves the user's message to the conversation history in the database
         response = chat.send_message(user_message)
