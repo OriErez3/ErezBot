@@ -350,7 +350,8 @@ tool_dict = {
     
 }
 screenshot_tools = {"browser_navigate", "browser_screenshot", "browser_click", "browser_type", "browser_scroll", "browser_click_element", "browser_go_back"}
-MAX_TOOL_ITERATIONS = 12
+MAX_TOOL_ITERATIONS = 20
+KEEP_RECENT_SCREENSHOTS = 2
 # Matches raw element-map lines (e.g. "[12] a: 'text' at (100, 200)") or pasted-HTML fragments
 INVALID_REPLY_PATTERN = re.compile(r"^\[\d+\]\s+\w+:|target=\"_blank\"|utm_source=")
 
@@ -416,6 +417,23 @@ def _send_tool_result(chat: Any, func: Any, tool_name: str, result: Any) -> Any:
         )
     ))
 
+def _prune_old_screenshots(chat: Any, keep_recent: int = KEEP_RECENT_SCREENSHOTS) -> None:
+    """Strips inline image data from older tool-result turns in the live chat history,
+    keeping only the most recent `keep_recent` screenshots so context size stays bounded
+    no matter how many tool calls the loop makes."""
+    history = chat.get_history(curated=True)
+    image_indices = [
+        i for i, content in enumerate(history)
+        if content.parts and any(p.inline_data is not None for p in content.parts)
+    ]
+    for i in image_indices[:-keep_recent] if keep_recent else image_indices:
+        content = history[i]
+        content.parts = [
+            types.Part(text="[older screenshot omitted to save context]")
+            if p.inline_data is not None else p
+            for p in content.parts
+        ]
+
 async def _run_tool_loop(chat: Any, response: Any) -> tuple[Any, bool]:
     """Repeatedly executes tool calls requested by the model until it stops calling tools,
     a duplicate call is detected, or MAX_TOOL_ITERATIONS is exceeded. Returns the final
@@ -453,6 +471,7 @@ async def _run_tool_loop(chat: Any, response: Any) -> tuple[Any, bool]:
 
             result = await _execute_tool(tool_name, func.args)
             response = _send_tool_result(chat, func, tool_name, result)
+            _prune_old_screenshots(chat)
     return response, give_up
 
 def _finalize_reply(response: Any, give_up: bool) -> str:
@@ -482,7 +501,7 @@ async def respond(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE) -
         contents=[types.Content(role=msg["role"], parts=[types.Part(text=msg["parts"][0])]) for msg in conversation] #Converts the conversation history into the correct format for Gemini API
         browser_url = t.browser_current_url() #Grounds the model in the browser's actual current page, regardless of what past conversation text says
         chat = client.chats.create(
-                model="gemini-3.5-flash",
+                model="gemini-3.1-flash-lite",
                 history=contents, #type: ignore
                 config=types.GenerateContentConfig(tools=[tools],
                     system_instruction=build_system_instruction(memory, browser_url)
