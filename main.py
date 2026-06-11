@@ -437,8 +437,8 @@ async def start(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await update.message.reply_text("Hello! I'm your Google AI assistant.") # type: ignore
 ##- Username: {username}
 #- Current directory: {cwd}
-def build_system_instruction(memory: str, browser_url: str, now: str) -> str:
-    return f"""You are a personal AI assistant. Be helpful and concise.
+def build_system_instruction(memory: str, browser_url: str, now: str, persist_mode: bool = False) -> str:
+    instruction = f"""You are a personal AI assistant. Be helpful and concise.
 
 System info:
 - OS: {os_name}
@@ -469,6 +469,9 @@ Tool rules:
 - Only ask the user for help if truly stuck after exhausting all options
 - Always reply to the user in your own clear words. Never paste raw HTML, element-map/tool output, or URLs with tracking parameters directly into your reply
 - If the user changes topic or asks you to abandon the current task, fully switch focus to their new request and disregard unrelated state or results from the abandoned task"""
+    if persist_mode:
+        instruction += "\n- PERSISTENT MODE IS ON: do not give up, ask the user for help, or stop early. Keep trying different approaches until the task is fully complete. Only stop if you hit an unrecoverable API error."
+    return instruction
 #Function to handle messages. Used the most often.
 
 tool_dict = {
@@ -502,7 +505,9 @@ tool_dict = {
 }
 screenshot_tools = {"browser_navigate", "browser_screenshot", "browser_click", "browser_type", "browser_scroll", "browser_click_element", "browser_go_back"}
 MAX_TOOL_ITERATIONS = 20
+PERSIST_MAX_TOOL_ITERATIONS = 100
 KEEP_RECENT_SCREENSHOTS = 2
+PERSIST_MODE = False
 # Matches raw element-map lines (e.g. "[12] a: 'text' at (100, 200)") or pasted-HTML fragments
 INVALID_REPLY_PATTERN = re.compile(r"^\[\d+\]\s+\w+:|target=\"_blank\"|utm_source=")
 
@@ -585,13 +590,18 @@ def _prune_old_screenshots(chat: Any, keep_recent: int = KEEP_RECENT_SCREENSHOTS
             for p in content.parts
         ]
 
-async def _run_tool_loop(chat: Any, response: Any) -> tuple[Any, bool]:
+async def _run_tool_loop(chat: Any, response: Any, persist_mode: bool = False) -> tuple[Any, bool]:
     """Repeatedly executes tool calls requested by the model until it stops calling tools,
-    a duplicate call is detected, or MAX_TOOL_ITERATIONS is exceeded. Returns the final
-    response and whether the loop gave up early."""
+    a duplicate call is detected, or the iteration cap is exceeded. Returns the final
+    response and whether the loop gave up early.
+
+    In persist_mode, duplicate calls no longer trigger a give-up - the model is told to try a
+    different approach and keeps going - and the iteration cap is raised to
+    PERSIST_MAX_TOOL_ITERATIONS as a safety net instead of MAX_TOOL_ITERATIONS."""
     seen_calls = set()
     give_up = False
     iteration_count = 0
+    max_iterations = PERSIST_MAX_TOOL_ITERATIONS if persist_mode else MAX_TOOL_ITERATIONS
     while response.function_calls and not give_up: #Checks if the AI called any tools in its response
         for func in response.function_calls: #If it did, it executes the tool calls and gets the results
             call_key = f"{func.name}_{func.args}"
@@ -599,7 +609,7 @@ async def _run_tool_loop(chat: Any, response: Any) -> tuple[Any, bool]:
             logger.debug("Tool call: %s", tool_name)
 
             iteration_count += 1
-            if iteration_count > MAX_TOOL_ITERATIONS:
+            if iteration_count > max_iterations:
                 result = "You've taken too many actions on this task. Stop here and respond to the user now, summarizing what you've done so far and what's left."
                 response = chat.send_message(types.Part(
                     function_response=types.FunctionResponse(
@@ -610,6 +620,14 @@ async def _run_tool_loop(chat: Any, response: Any) -> tuple[Any, bool]:
                 break
 
             if call_key in seen_calls:
+                if persist_mode:
+                    result = "You've already tried that exact call. Try a different approach instead of repeating it."
+                    response = chat.send_message(types.Part(
+                        function_response=types.FunctionResponse(
+                    name=tool_name,
+                    id=func.id,
+                    response={"result": result})))
+                    break
                 result = "This approach isn't working. Tell the user you're unable to complete the task and ask them for more information."
                 response = chat.send_message(types.Part(
                     function_response=types.FunctionResponse(
@@ -644,7 +662,7 @@ def _finalize_reply(response: Any, give_up: bool) -> str:
         return "Sorry, I couldn't come up with a response there. Could you try rephrasing?"
     return final_text
 
-async def _generate_response(prompt: str) -> tuple[str, bool]:
+async def _generate_response(prompt: str, persist_mode: bool = False) -> tuple[str, bool]:
     """Builds a chat from the stored conversation history, sends `prompt` to the model, runs the
     tool loop, and returns (final_text, give_up). Does not touch the conversation history table -
     callers decide what (if anything) to record."""
@@ -657,10 +675,10 @@ async def _generate_response(prompt: str) -> tuple[str, bool]:
             model="gemini-3.1-flash-lite",
             history=contents, #type: ignore
             config=types.GenerateContentConfig(tools=[tools],
-                system_instruction=build_system_instruction(memory, browser_url, now)
+                system_instruction=build_system_instruction(memory, browser_url, now, persist_mode)
         ),)
     response = chat.send_message(prompt)
-    response, give_up = await _run_tool_loop(chat, response) #Executes any tool calls the model requested
+    response, give_up = await _run_tool_loop(chat, response, persist_mode) #Executes any tool calls the model requested
     return _finalize_reply(response, give_up), give_up
 
 async def respond(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -670,7 +688,7 @@ async def respond(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE) -
         if database.get_setting("chat_id") != chat_id:
             database.set_setting("chat_id", chat_id)
         add_to_conversation("user", user_message)#type: ignore #Saves the user's message to the conversation history in the database
-        final_text, _ = await _generate_response(user_message) #type: ignore
+        final_text, _ = await _generate_response(user_message, PERSIST_MODE) #type: ignore
         add_to_conversation("model", final_text) #Saves the AI's response to the conversation history in the database
         await update.message.reply_text(final_text) #Sends the AI's response back to the user on Telegram
     except Exception as e:
@@ -690,13 +708,23 @@ async def respond(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE) -
    
 async def clear(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     database.clear_conversation()
-    await update.message.reply_text("Conversation cleared!") #type: ignore      
+    await update.message.reply_text("Conversation cleared!") #type: ignore
+
+async def toggle_persist(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    global PERSIST_MODE
+    PERSIST_MODE = not PERSIST_MODE
+    if PERSIST_MODE:
+        status = "ON - I won't give up on a task until it's done or I hit an API error."
+    else:
+        status = "OFF."
+    await update.message.reply_text(f"Persistent mode is now {status}") #type: ignore
         
 
 def main() -> None:
     application = ApplicationBuilder().token(telegram_key).build() # type: ignore
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("clear", clear))
+    application.add_handler(CommandHandler("persist", toggle_persist))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, respond))
     application.run_polling(allowed_updates=telegram.Update.ALL_TYPES)
 
