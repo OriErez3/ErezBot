@@ -644,24 +644,33 @@ def _finalize_reply(response: Any, give_up: bool) -> str:
         return "Sorry, I couldn't come up with a response there. Could you try rephrasing?"
     return final_text
 
+async def _generate_response(prompt: str) -> tuple[str, bool]:
+    """Builds a chat from the stored conversation history, sends `prompt` to the model, runs the
+    tool loop, and returns (final_text, give_up). Does not touch the conversation history table -
+    callers decide what (if anything) to record."""
+    memory = read_memory() #Reads the bot's memory. This memory stores important information only.
+    conversation = read_conversation(30) #Reads the recent conversation history to provide context for the AI's response
+    contents=[types.Content(role=msg["role"], parts=[types.Part(text=msg["parts"][0])]) for msg in conversation] #Converts the conversation history into the correct format for Gemini API
+    browser_url = t.browser_current_url() #Grounds the model in the browser's actual current page, regardless of what past conversation text says
+    now = datetime.now().astimezone().isoformat() #Grounds the model in the current date/time for resolving relative dates (e.g. calendar events)
+    chat = client.chats.create(
+            model="gemini-3.1-flash-lite",
+            history=contents, #type: ignore
+            config=types.GenerateContentConfig(tools=[tools],
+                system_instruction=build_system_instruction(memory, browser_url, now)
+        ),)
+    response = chat.send_message(prompt)
+    response, give_up = await _run_tool_loop(chat, response) #Executes any tool calls the model requested
+    return _finalize_reply(response, give_up), give_up
+
 async def respond(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
         user_message = update.message.text # type: ignore
-        memory = read_memory() #Reads the bot's memory. This memory stores important information only.
-        conversation = read_conversation(30) #Reads the recent conversation history to provide context for the AI's response
-        contents=[types.Content(role=msg["role"], parts=[types.Part(text=msg["parts"][0])]) for msg in conversation] #Converts the conversation history into the correct format for Gemini API
-        browser_url = t.browser_current_url() #Grounds the model in the browser's actual current page, regardless of what past conversation text says
-        now = datetime.now().astimezone().isoformat() #Grounds the model in the current date/time for resolving relative dates (e.g. calendar events)
-        chat = client.chats.create(
-                model="gemini-3.1-flash-lite",
-                history=contents, #type: ignore
-                config=types.GenerateContentConfig(tools=[tools],
-                    system_instruction=build_system_instruction(memory, browser_url, now)
-            ),)
+        chat_id = str(update.effective_chat.id) #type: ignore #Captures where to send proactive/unprompted messages later
+        if database.get_setting("chat_id") != chat_id:
+            database.set_setting("chat_id", chat_id)
         add_to_conversation("user", user_message)#type: ignore #Saves the user's message to the conversation history in the database
-        response = chat.send_message(user_message)
-        response, give_up = await _run_tool_loop(chat, response) #Executes any tool calls the model requested
-        final_text = _finalize_reply(response, give_up)
+        final_text, _ = await _generate_response(user_message) #type: ignore
         add_to_conversation("model", final_text) #Saves the AI's response to the conversation history in the database
         await update.message.reply_text(final_text) #Sends the AI's response back to the user on Telegram
     except Exception as e:
