@@ -31,9 +31,10 @@ def add_to_conversation(role: str, message: str):
 
 def read_conversation(limit: int):
     cursor.execute('''
-        SELECT role, message FROM conversation ORDER BY timestamp DESC LIMIT ?
+        SELECT role, message FROM conversation ORDER BY id DESC LIMIT ?
     ''', (limit,))
-    return [{"role": row[0], "parts": [row[1]]} for row in cursor.fetchall()]
+    rows = cursor.fetchall()
+    return [{"role": row[0], "parts": [row[1]]} for row in reversed(rows)]
 
 def add_to_memory(key: str, value: str):
     cursor.execute('''
