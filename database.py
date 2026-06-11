@@ -17,6 +17,12 @@ cursor.execute('''
         value TEXT
     )
 ''')
+cursor.execute('''
+    CREATE TABLE IF NOT EXISTS settings (
+        key TEXT PRIMARY KEY,
+        value TEXT
+    )
+''')
 conn.commit()
 
 def clear_conversation():
@@ -49,6 +55,18 @@ def read_memory():
     if not rows:
         return ''
     return "\n".join(f"{row[0]}: {row[1]}" for row in rows)
+
+def set_setting(key: str, value: str):
+    cursor.execute('''
+        INSERT INTO settings (key, value) VALUES (?, ?)
+        ON CONFLICT(key) DO UPDATE SET value=excluded.value
+    ''', (key, value))
+    conn.commit()
+
+def get_setting(key: str) -> str | None:
+    cursor.execute('SELECT value FROM settings WHERE key = ?', (key,))
+    row = cursor.fetchone()
+    return row[0] if row else None
 
 def delete_memory(key: str) -> bool:
     cursor.execute('SELECT key FROM memory WHERE key = ?', (key,))
