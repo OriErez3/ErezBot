@@ -212,7 +212,7 @@ tools = types.Tool(
             )),
             types.FunctionDeclaration(
             name="browser_type",
-            description="Types whatever is passed in and can press the enter button to submit it to a form.",
+            description="Types text into the currently focused element. Set press_enter=True to immediately submit/confirm afterward (e.g. search bars, login forms, chat inputs, game guesses like Wordle) - this is usually what you want instead of typing and then taking a separate action to submit.",
             parameters=types.Schema(
                 type=types.Type.OBJECT,
                 properties={
@@ -222,7 +222,7 @@ tools = types.Tool(
                     ),
                     "press_enter": types.Schema(
                         type=types.Type.BOOLEAN,
-                        description="Use to press enter if needed. Defaults to False"
+                        description="Set to true to press Enter right after typing, submitting/confirming the input. Only leave false if you specifically need to type without submitting (e.g. a multi-line text area)."
                     )
                 },
                 required=["text"]
@@ -321,6 +321,7 @@ Tool rules:
 - Browser: use write_file to save any content to disk
 - Browser: for a new or ambiguous request, check "Current browser page" above first, and use browser_get_elements/browser_screenshot to see what's actually on screen before acting - don't assume you're still on a page from earlier conversation
 - Browser: never call browser_go_back unless the user explicitly asks to go back; it can navigate away from the page you're supposed to be working on
+- Browser: when typing into a search bar, form field, or game input that should be submitted (e.g. a Wordle guess), call browser_type with press_enter=True instead of typing and then taking a separate action to submit
 - After every browser action check the result before deciding what to do next
 - Only ask the user for help if truly stuck after exhausting all options
 - Always reply to the user in your own clear words. Never paste raw HTML, element-map/tool output, or URLs with tracking parameters directly into your reply
