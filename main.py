@@ -131,6 +131,7 @@ screenshot_tools = {"browser_navigate", "browser_screenshot", "browser_click", "
 duplicate_exempt_tools = {"browser_screenshot", "browser_get_elements", "browser_current_url", "browser_scroll", "read_memory", "read_file", "list_directory", "gmail_list_messages", "gmail_read_message", "calendar_list_events", "drive_list_files", "drive_read_file"}
 MAX_TOOL_ITERATIONS = 20
 PERSIST_MAX_TOOL_ITERATIONS = 100
+TELEGRAM_MAX_MESSAGE_CHARS = 4000 #Telegram rejects messages over 4096 chars - leave headroom
 KEEP_RECENT_SCREENSHOTS = 2
 PERSIST_MODE = False
 CHECKIN_INTERVAL_MINUTES = 60  # TODO: revert to 60 after testing proactive check-ins
@@ -319,6 +320,11 @@ async def _generate_response(prompt: str, persist_mode: bool = False) -> tuple[s
     response, give_up = await _run_tool_loop(chat, response, persist_mode) #Executes any tool calls the model requested
     return _finalize_reply(response, give_up), give_up
 
+def _chunk_message(text: str) -> list:
+    """Splits a reply into pieces under Telegram's message length limit - sending one
+    oversized message raises BadRequest and the user would get nothing at all."""
+    return [text[i:i + TELEGRAM_MAX_MESSAGE_CHARS] for i in range(0, len(text), TELEGRAM_MAX_MESSAGE_CHARS)] or [text]
+
 async def respond(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     #Edited messages, channel posts, reactions etc. arrive with message=None - nothing to respond to
     if update.message is None or update.message.text is None or update.effective_chat is None:
@@ -331,7 +337,8 @@ async def respond(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE) -
         add_to_conversation("user", user_message) #Saves the user's message to the conversation history in the database
         final_text, _ = await _generate_response(user_message, PERSIST_MODE)
         add_to_conversation("model", final_text) #Saves the AI's response to the conversation history in the database
-        await update.message.reply_text(final_text) #Sends the AI's response back to the user on Telegram
+        for chunk in _chunk_message(final_text): #Sends the AI's response back to the user on Telegram
+            await update.message.reply_text(chunk)
     except Exception as e:
         error_message = str(e)
         if "429" in error_message or "quota" in error_message.lower() or "exhausted" in error_message.lower():
@@ -377,7 +384,8 @@ async def proactive_check(context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     if give_up or final_text.strip().upper() == "NOTHING_TO_REPORT":
         return
-    await context.bot.send_message(chat_id=int(chat_id), text=final_text)
+    for chunk in _chunk_message(final_text):
+        await context.bot.send_message(chat_id=int(chat_id), text=chunk)
     add_to_conversation("model", final_text)
 
 async def check_scheduled_tasks(context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -395,7 +403,8 @@ async def check_scheduled_tasks(context: ContextTypes.DEFAULT_TYPE) -> None:
             logger.exception("Scheduled task failed")
             final_text = f"I tried to run a scheduled task but hit an error: {task['task']}"
         database.delete_scheduled_task(task["id"])
-        await context.bot.send_message(chat_id=int(task["chat_id"]), text=final_text)
+        for chunk in _chunk_message(final_text):
+            await context.bot.send_message(chat_id=int(task["chat_id"]), text=chunk)
         add_to_conversation("model", final_text)
 
 
