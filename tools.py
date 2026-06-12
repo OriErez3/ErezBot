@@ -26,6 +26,8 @@ logger = logging.getLogger(__name__)
 tav_key = os.getenv("TAVILY_KEY")
 tav_client = TavilyClient(tav_key)
 
+SHELL_TIMEOUT_SECONDS = 60
+
 def run_shell(command: str) -> str:
     try:
         result = subprocess.run(
@@ -34,9 +36,12 @@ def run_shell(command: str) -> str:
             capture_output=True,
             text=True,
             encoding="utf-8",
-            errors="replace"  # replaces undecodable characters instead of crashing
+            errors="replace",  # replaces undecodable characters instead of crashing
+            timeout=SHELL_TIMEOUT_SECONDS  # a hung command must not freeze the bot forever
         )
         return result.stdout + result.stderr
+    except subprocess.TimeoutExpired:
+        return f"Error: command timed out after {SHELL_TIMEOUT_SECONDS} seconds. It may have been waiting for input - try a non-interactive variant."
     except Exception as e:
         return f"Error: {e}"
 
