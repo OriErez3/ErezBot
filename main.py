@@ -522,7 +522,7 @@ MAX_TOOL_ITERATIONS = 20
 PERSIST_MAX_TOOL_ITERATIONS = 100
 KEEP_RECENT_SCREENSHOTS = 2
 PERSIST_MODE = False
-CHECKIN_INTERVAL_MINUTES = 1  # TODO: revert to 60 after testing proactive check-ins
+CHECKIN_INTERVAL_MINUTES = 60  # TODO: revert to 60 after testing proactive check-ins
 CHECKIN_PROMPT = (
     "[Automated periodic check-in] Use gmail_list_messages with query 'is:unread' to check for "
     "important new emails, and calendar_list_events to check for events starting soon. Compare "
