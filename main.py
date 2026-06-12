@@ -597,13 +597,14 @@ async def _execute_tool(tool_name: str, args: dict) -> Any:
         logger.warning(result)
         return result
 
-async def _send_tool_result(chat: Any, func: Any, tool_name: str, result: Any) -> Any:
-    """Sends a tool's result back to the chat, attaching an image if the result includes one."""
+def _tool_result_parts(func: Any, tool_name: str, result: Any) -> list:
+    """Builds the message parts for one tool's result, attaching an image part if the
+    result includes a screenshot. Sending happens once per batch in _run_tool_loop."""
     if isinstance(result, tuple):
         # Has both image and element map
         image_b64, element_map = result
         image_bytes = base64.b64decode(image_b64)
-        return await chat.send_message([
+        return [
             types.Part(
                 function_response=types.FunctionResponse(
                     name=tool_name,
@@ -612,10 +613,10 @@ async def _send_tool_result(chat: Any, func: Any, tool_name: str, result: Any) -
                 )
             ),
             types.Part.from_bytes(data=image_bytes, mime_type="image/png")
-        ])
+        ]
     if tool_name in screenshot_tools and not result.startswith("Error"):
         image_bytes = base64.b64decode(result)
-        return await chat.send_message([
+        return [
             types.Part(
                 function_response=types.FunctionResponse(
                     name=tool_name,
@@ -624,14 +625,14 @@ async def _send_tool_result(chat: Any, func: Any, tool_name: str, result: Any) -
                 )
             ),
             types.Part.from_bytes(data=image_bytes, mime_type="image/png")
-        ])
-    return await chat.send_message(types.Part(
+        ]
+    return [types.Part(
         function_response=types.FunctionResponse(
             name=tool_name,
             id=func.id,
             response={"result": result}
         )
-    ))
+    )]
 
 def _prune_old_screenshots(chat: Any, keep_recent: int = KEEP_RECENT_SCREENSHOTS) -> None:
     """Strips inline image data from older tool-result turns in the live chat history,
@@ -663,44 +664,37 @@ async def _run_tool_loop(chat: Any, response: Any, persist_mode: bool = False) -
     iteration_count = 0
     max_iterations = PERSIST_MAX_TOOL_ITERATIONS if persist_mode else MAX_TOOL_ITERATIONS
     while response.function_calls and not give_up: #Checks if the AI called any tools in its response
-        for func in response.function_calls: #If it did, it executes the tool calls and gets the results
+        #Execute every call in this response first, collect all the results, then answer
+        #them in ONE message - the API requires a response for each call in the turn, and
+        #sending mid-batch would generate a new model response while we're still iterating
+        #over the old one
+        parts = []
+        stop_executing = False #Set when the cap/duplicate check trips mid-batch; the rest get a skip message
+        for func in response.function_calls:
             call_key = f"{func.name}_{func.args}"
             tool_name = func.name
             logger.debug("Tool call: %s", tool_name)
 
             iteration_count += 1
-            if iteration_count > max_iterations:
+            if stop_executing:
+                result = "Skipped - stopping tool use now."
+            elif iteration_count > max_iterations:
                 result = "You've taken too many actions on this task. Stop here and respond to the user now, summarizing what you've done so far and what's left."
-                response = await chat.send_message(types.Part(
-                    function_response=types.FunctionResponse(
-                name=tool_name,
-                id=func.id,
-                response={"result": result})))
                 give_up = True
-                break
-
-            if call_key in seen_calls:
+                stop_executing = True
+            elif call_key in seen_calls:
                 if persist_mode:
                     result = "You've already tried that exact call. Try a different approach instead of repeating it."
-                    response = await chat.send_message(types.Part(
-                        function_response=types.FunctionResponse(
-                    name=tool_name,
-                    id=func.id,
-                    response={"result": result})))
-                    break
-                result = "This approach isn't working. Tell the user you're unable to complete the task and ask them for more information."
-                response = await chat.send_message(types.Part(
-                    function_response=types.FunctionResponse(
-                name=tool_name,
-                id=func.id,
-                response={"result": result})))
-                give_up = True
-                break
-            seen_calls.add(call_key)
-
-            result = await _execute_tool(tool_name, func.args)
-            response = await _send_tool_result(chat, func, tool_name, result)
-            _prune_old_screenshots(chat)
+                else:
+                    result = "This approach isn't working. Tell the user you're unable to complete the task and ask them for more information."
+                    give_up = True
+                    stop_executing = True
+            else:
+                seen_calls.add(call_key)
+                result = await _execute_tool(tool_name, func.args)
+            parts.extend(_tool_result_parts(func, tool_name, result))
+        response = await chat.send_message(parts)
+        _prune_old_screenshots(chat)
     return response, give_up
 
 def _finalize_reply(response: Any, give_up: bool) -> str:
