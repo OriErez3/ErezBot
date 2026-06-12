@@ -26,10 +26,14 @@ logger = logging.getLogger(__name__)
 #Loads the environment variables for the APIs
 telegram_key = os.getenv("TELEGRAM_TOKEN")
 gemini_key = os.getenv("GEMINI_API_KEY")
+allowed_user_id = os.getenv("ALLOWED_USER_ID")
 if telegram_key is None:
     raise ValueError("TELEGRAM_TOKEN environment variable is required")
 if gemini_key is None:
     raise ValueError("GEMINI_API_KEY environment variable is required")
+if allowed_user_id is None:
+    raise ValueError("ALLOWED_USER_ID environment variable is required - the bot has shell access, so it must only answer you. Set it to your Telegram user id.")
+ALLOWED_USER_ID = int(allowed_user_id)
 
 client = genai.Client(api_key=gemini_key)
 
@@ -808,10 +812,12 @@ async def check_scheduled_tasks(context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 def main() -> None:
+    #Only respond to the owner - the bot has shell/email access, so ignore everyone else
+    user_filter = filters.User(user_id=ALLOWED_USER_ID)
     application = ApplicationBuilder().token(telegram_key).build() # type: ignore
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("clear", clear))
-    application.add_handler(CommandHandler("persist", toggle_persist))
+    application.add_handler(CommandHandler("start", start, filters=user_filter))
+    application.add_handler(CommandHandler("clear", clear, filters=user_filter))
+    application.add_handler(CommandHandler("persist", toggle_persist, filters=user_filter))
     application.job_queue.run_repeating( #type: ignore
         proactive_check,
         interval=CHECKIN_INTERVAL_MINUTES * 60,
@@ -822,7 +828,7 @@ def main() -> None:
         interval=SCHEDULED_TASK_POLL_SECONDS,
         first=SCHEDULED_TASK_POLL_SECONDS,
     )
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, respond))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & user_filter, respond))
     application.run_polling(allowed_updates=telegram.Update.ALL_TYPES)
 
 if __name__ == "__main__":
