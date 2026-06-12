@@ -1,5 +1,6 @@
 import base64
 import os
+import threading
 from datetime import datetime, timezone
 from email.mime.text import MIMEText
 
@@ -27,21 +28,32 @@ GOOGLE_DOC_EXPORT_MIME = {
 }
 
 
+#Credentials are cached after the first load so every tool call doesn't re-read and
+#re-parse token.json from disk. The lock guards loading/refreshing since tools run on
+#worker threads. Service objects from build() are deliberately NOT cached - they're
+#not thread-safe, and building one is cheap (no network call).
+_creds: Credentials | None = None
+_creds_lock = threading.Lock()
+
 def _get_credentials() -> Credentials:
-    if not os.path.exists(TOKEN_FILE):
-        raise RuntimeError(
-            'Google account not connected. Run: python -c "import google_services; '
-            'google_services.setup_auth()" once, then restart the bot.'
-        )
-    creds = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
-    if not creds.valid:
-        if creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-            with open(TOKEN_FILE, "w") as f:
-                f.write(creds.to_json())
-        else:
-            raise RuntimeError("Google credentials invalid. Re-run setup_auth().")
-    return creds
+    global _creds
+    with _creds_lock:
+        if _creds is None:
+            if not os.path.exists(TOKEN_FILE):
+                raise RuntimeError(
+                    'Google account not connected. Run: python -c "import google_services; '
+                    'google_services.setup_auth()" once, then restart the bot.'
+                )
+            _creds = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
+        if not _creds.valid:
+            if _creds.expired and _creds.refresh_token:
+                _creds.refresh(Request())
+                with open(TOKEN_FILE, "w") as f:
+                    f.write(_creds.to_json())
+            else:
+                _creds = None  #drop the bad cache so a fixed token.json gets picked up next call
+                raise RuntimeError("Google credentials invalid. Re-run setup_auth().")
+        return _creds
 
 
 def setup_auth() -> None:
