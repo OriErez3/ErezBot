@@ -15,8 +15,10 @@ SCOPES = [
     "https://www.googleapis.com/auth/calendar.readonly",
     "https://www.googleapis.com/auth/drive",
 ]
-CREDENTIALS_FILE = "credentials.json"
-TOKEN_FILE = "token.json"
+# Anchored next to this file so the bot finds them no matter where it's launched from
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+CREDENTIALS_FILE = os.path.join(BASE_DIR, "credentials.json")
+TOKEN_FILE = os.path.join(BASE_DIR, "token.json")
 
 GOOGLE_DOC_EXPORT_MIME = {
     "application/vnd.google-apps.document": "text/plain",

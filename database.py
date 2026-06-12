@@ -1,6 +1,9 @@
 import sqlite3
+from pathlib import Path
 
-conn = sqlite3.connect("memory.db")
+#Anchor the DB next to this file so the bot finds it no matter where it's launched from
+DB_PATH = Path(__file__).resolve().parent / "memory.db"
+conn = sqlite3.connect(DB_PATH)
 cursor = conn.cursor()
 cursor.execute('''
     CREATE TABLE IF NOT EXISTS conversation (
