@@ -1,8 +1,10 @@
 import logging
 import subprocess
+from datetime import datetime
 from database import add_to_memory
 from database import read_memory as read_memory_db
 from database import delete_memory as delete_memory_db
+from database import add_scheduled_task, get_setting
 import os
 import shutil
 from dotenv import load_dotenv
@@ -53,6 +55,18 @@ def read_memory() -> str:
         if not memory:
             return "No memories saved."
         return memory
+    except Exception as e:
+        return f"Error: {e}"
+
+
+def schedule_task(when: str, task: str) -> str:
+    try:
+        dt = datetime.fromisoformat(when)
+        chat_id = get_setting("chat_id")
+        if not chat_id:
+            return "Error: no chat registered yet - the user needs to message the bot first."
+        add_scheduled_task(chat_id, task, dt.timestamp())
+        return f"Task scheduled for {when}: {task}"
     except Exception as e:
         return f"Error: {e}"
 
