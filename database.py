@@ -35,9 +35,15 @@ cursor.execute('''
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         chat_id TEXT,
         task TEXT,
-        due_timestamp REAL
+        due_timestamp REAL,
+        status TEXT DEFAULT 'pending'
     )
 ''')
+#Migration for databases created before the status column existed
+try:
+    cursor.execute("ALTER TABLE scheduled_tasks ADD COLUMN status TEXT DEFAULT 'pending'")
+except sqlite3.OperationalError:
+    pass  #column already exists
 conn.commit()
 
 def clear_conversation():
@@ -102,15 +108,29 @@ def delete_memory(key: str) -> bool:
 def add_scheduled_task(chat_id: str, task: str, due_timestamp: float):
     with _lock:
         cursor.execute('''
-            INSERT INTO scheduled_tasks (chat_id, task, due_timestamp) VALUES (?, ?, ?)
+            INSERT INTO scheduled_tasks (chat_id, task, due_timestamp, status) VALUES (?, ?, ?, 'pending')
         ''', (chat_id, task, due_timestamp))
         conn.commit()
 
 def get_due_tasks(now_timestamp: float):
     with _lock:
-        cursor.execute('SELECT id, chat_id, task FROM scheduled_tasks WHERE due_timestamp <= ?', (now_timestamp,))
+        cursor.execute("SELECT id, chat_id, task FROM scheduled_tasks WHERE due_timestamp <= ? AND status = 'pending'", (now_timestamp,))
         rows = cursor.fetchall()
     return [{"id": row[0], "chat_id": row[1], "task": row[2]} for row in rows]
+
+def mark_task_running(task_id: int):
+    with _lock:
+        cursor.execute("UPDATE scheduled_tasks SET status = 'running' WHERE id = ?", (task_id,))
+        conn.commit()
+
+def reset_running_tasks() -> int:
+    """Re-queues tasks left in 'running' by a crash so they aren't silently lost.
+    Returns how many were re-queued (a re-queued task may run twice if the crash
+    happened after the action but before cleanup)."""
+    with _lock:
+        cursor.execute("UPDATE scheduled_tasks SET status = 'pending' WHERE status = 'running'")
+        conn.commit()
+        return cursor.rowcount
 
 def delete_scheduled_task(task_id: int):
     with _lock:

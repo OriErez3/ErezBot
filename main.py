@@ -802,17 +802,23 @@ async def check_scheduled_tasks(context: ContextTypes.DEFAULT_TYPE) -> None:
     user."""
     now_ts = datetime.now().timestamp()
     for task in database.get_due_tasks(now_ts):
-        database.delete_scheduled_task(task["id"])
+        #Mark running instead of deleting up front - if the bot crashes mid-task, the row
+        #survives and gets re-queued on the next startup instead of silently vanishing
+        database.mark_task_running(task["id"])
         try:
             final_text, _ = await _generate_response(SCHEDULED_TASK_PROMPT.format(task=task["task"]))
         except Exception:
             logger.exception("Scheduled task failed")
             final_text = f"I tried to run a scheduled task but hit an error: {task['task']}"
+        database.delete_scheduled_task(task["id"])
         await context.bot.send_message(chat_id=int(task["chat_id"]), text=final_text)
         add_to_conversation("model", final_text)
 
 
 def main() -> None:
+    requeued = database.reset_running_tasks()
+    if requeued:
+        logger.warning("Re-queued %d scheduled task(s) interrupted by a previous shutdown", requeued)
     #Only respond to the owner - the bot has shell/email access, so ignore everyone else
     user_filter = filters.User(user_id=ALLOWED_USER_ID)
     application = ApplicationBuilder().token(telegram_key).build() # type: ignore
