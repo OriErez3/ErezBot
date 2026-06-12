@@ -591,19 +591,19 @@ async def _execute_tool(tool_name: str, args: dict) -> Any:
     try:
         if inspect.iscoroutinefunction(tool_dict[tool_name]):
             return await tool_dict[tool_name](**args)
-        return tool_dict[tool_name](**args)
+        return await asyncio.to_thread(tool_dict[tool_name], **args) #Sync tools run in a worker thread so they don't block the event loop
     except Exception as e:
         result = f"Error executing {tool_name}: {e}"
         logger.warning(result)
         return result
 
-def _send_tool_result(chat: Any, func: Any, tool_name: str, result: Any) -> Any:
+async def _send_tool_result(chat: Any, func: Any, tool_name: str, result: Any) -> Any:
     """Sends a tool's result back to the chat, attaching an image if the result includes one."""
     if isinstance(result, tuple):
         # Has both image and element map
         image_b64, element_map = result
         image_bytes = base64.b64decode(image_b64)
-        return chat.send_message([
+        return await chat.send_message([
             types.Part(
                 function_response=types.FunctionResponse(
                     name=tool_name,
@@ -615,7 +615,7 @@ def _send_tool_result(chat: Any, func: Any, tool_name: str, result: Any) -> Any:
         ])
     if tool_name in screenshot_tools and not result.startswith("Error"):
         image_bytes = base64.b64decode(result)
-        return chat.send_message([
+        return await chat.send_message([
             types.Part(
                 function_response=types.FunctionResponse(
                     name=tool_name,
@@ -625,7 +625,7 @@ def _send_tool_result(chat: Any, func: Any, tool_name: str, result: Any) -> Any:
             ),
             types.Part.from_bytes(data=image_bytes, mime_type="image/png")
         ])
-    return chat.send_message(types.Part(
+    return await chat.send_message(types.Part(
         function_response=types.FunctionResponse(
             name=tool_name,
             id=func.id,
@@ -671,7 +671,7 @@ async def _run_tool_loop(chat: Any, response: Any, persist_mode: bool = False) -
             iteration_count += 1
             if iteration_count > max_iterations:
                 result = "You've taken too many actions on this task. Stop here and respond to the user now, summarizing what you've done so far and what's left."
-                response = chat.send_message(types.Part(
+                response = await chat.send_message(types.Part(
                     function_response=types.FunctionResponse(
                 name=tool_name,
                 id=func.id,
@@ -682,14 +682,14 @@ async def _run_tool_loop(chat: Any, response: Any, persist_mode: bool = False) -
             if call_key in seen_calls:
                 if persist_mode:
                     result = "You've already tried that exact call. Try a different approach instead of repeating it."
-                    response = chat.send_message(types.Part(
+                    response = await chat.send_message(types.Part(
                         function_response=types.FunctionResponse(
                     name=tool_name,
                     id=func.id,
                     response={"result": result})))
                     break
                 result = "This approach isn't working. Tell the user you're unable to complete the task and ask them for more information."
-                response = chat.send_message(types.Part(
+                response = await chat.send_message(types.Part(
                     function_response=types.FunctionResponse(
                 name=tool_name,
                 id=func.id,
@@ -699,7 +699,7 @@ async def _run_tool_loop(chat: Any, response: Any, persist_mode: bool = False) -
             seen_calls.add(call_key)
 
             result = await _execute_tool(tool_name, func.args)
-            response = _send_tool_result(chat, func, tool_name, result)
+            response = await _send_tool_result(chat, func, tool_name, result)
             _prune_old_screenshots(chat)
     return response, give_up
 
@@ -731,13 +731,13 @@ async def _generate_response(prompt: str, persist_mode: bool = False) -> tuple[s
     contents=[types.Content(role=msg["role"], parts=[types.Part(text=msg["parts"][0])]) for msg in conversation] #Converts the conversation history into the correct format for Gemini API
     browser_url = t.browser_current_url() #Grounds the model in the browser's actual current page, regardless of what past conversation text says
     now = datetime.now().astimezone().isoformat() #Grounds the model in the current date/time for resolving relative dates (e.g. calendar events)
-    chat = client.chats.create(
+    chat = client.aio.chats.create( #The async client - same API, but send_message can be awaited so it doesn't block the event loop
             model="gemini-3.1-flash-lite",
             history=contents, #type: ignore
             config=types.GenerateContentConfig(tools=[tools],
                 system_instruction=build_system_instruction(memory, browser_url, now, persist_mode)
         ),)
-    response = chat.send_message(prompt)
+    response = await chat.send_message(prompt)
     response, give_up = await _run_tool_loop(chat, response, persist_mode) #Executes any tool calls the model requested
     return _finalize_reply(response, give_up), give_up
 
