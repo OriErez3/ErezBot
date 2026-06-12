@@ -69,6 +69,14 @@ def _drive():
 # Gmail
 
 def gmail_list_messages(max_results: int = 10, query: str = "") -> str:
+    """Lists recent Gmail messages, optionally filtered with a Gmail search query.
+    Returns each message's id, sender, subject, date, and a snippet. Use the id with
+    gmail_read_message to see the full message.
+
+    Args:
+        max_results: Maximum number of messages to return. Defaults to 10.
+        query: Optional Gmail search query, e.g. 'is:unread' or 'from:someone@example.com'.
+    """
     try:
         service = _gmail()
         results = service.users().messages().list(
@@ -106,6 +114,11 @@ def _extract_gmail_body(payload: dict) -> str:
 
 
 def gmail_read_message(message_id: str) -> str:
+    """Reads the full content (sender, subject, date, body) of a Gmail message by id.
+
+    Args:
+        message_id: The id of the message, from gmail_list_messages.
+    """
     try:
         service = _gmail()
         msg = service.users().messages().get(userId="me", id=message_id, format="full").execute()
@@ -123,6 +136,13 @@ def gmail_read_message(message_id: str) -> str:
 
 
 def gmail_send_email(to: str, subject: str, body: str) -> str:
+    """Sends an email from the user's Gmail account.
+
+    Args:
+        to: Recipient email address.
+        subject: Email subject line.
+        body: Email body text.
+    """
     try:
         service = _gmail()
         message = MIMEText(body)
@@ -136,6 +156,11 @@ def gmail_send_email(to: str, subject: str, body: str) -> str:
 
 
 def gmail_mark_as_read(message_id: str) -> str:
+    """Marks a Gmail message as read so it won't show up in 'is:unread' searches again.
+
+    Args:
+        message_id: The id of the message, from gmail_list_messages.
+    """
     try:
         service = _gmail()
         service.users().messages().modify(
@@ -149,6 +174,11 @@ def gmail_mark_as_read(message_id: str) -> str:
 # Calendar
 
 def calendar_list_events(max_results: int = 10) -> str:
+    """Lists the user's upcoming Google Calendar events, soonest first.
+
+    Args:
+        max_results: Maximum number of events to return. Defaults to 10.
+    """
     try:
         service = _calendar()
         now = datetime.now(timezone.utc).isoformat()
@@ -170,6 +200,15 @@ def calendar_list_events(max_results: int = 10) -> str:
 
 
 def calendar_create_event(summary: str, start: str, end: str, description: str = "") -> str:
+    """Creates an event on the user's primary Google Calendar. Use the current date/time
+    from the system info to resolve relative dates like 'tomorrow' or 'next Monday'.
+
+    Args:
+        summary: Event title.
+        start: Start time as an RFC3339 datetime with offset, e.g. 2026-06-12T15:00:00-04:00.
+        end: End time as an RFC3339 datetime with offset, e.g. 2026-06-12T16:00:00-04:00.
+        description: Optional event description.
+    """
     try:
         service = _calendar()
         event = {
@@ -187,6 +226,13 @@ def calendar_create_event(summary: str, start: str, end: str, description: str =
 # Drive
 
 def drive_list_files(query: str = "", max_results: int = 10) -> str:
+    """Lists files in the user's Google Drive, most recently modified first, optionally
+    filtered with a Drive search query.
+
+    Args:
+        query: Optional Drive search query, e.g. "name contains 'budget'".
+        max_results: Maximum number of files to return. Defaults to 10.
+    """
     try:
         service = _drive()
         results = service.files().list(
@@ -205,6 +251,12 @@ def drive_list_files(query: str = "", max_results: int = 10) -> str:
 
 
 def drive_read_file(file_id: str) -> str:
+    """Reads the text content of a file in the user's Google Drive by id (Google
+    Docs/Sheets/Slides are exported as text/CSV).
+
+    Args:
+        file_id: The id of the file, from drive_list_files.
+    """
     try:
         service = _drive()
         meta = service.files().get(fileId=file_id, fields="mimeType,name").execute()
@@ -223,6 +275,13 @@ def drive_read_file(file_id: str) -> str:
 
 
 def drive_upload_file(name: str, content: str, mime_type: str = "text/plain") -> str:
+    """Creates a new file with the given text content in the user's Google Drive.
+
+    Args:
+        name: Name for the new file.
+        content: Text content of the file.
+        mime_type: MIME type of the content. Defaults to text/plain.
+    """
     try:
         service = _drive()
         media = MediaInMemoryUpload(content.encode("utf-8"), mimetype=mime_type)

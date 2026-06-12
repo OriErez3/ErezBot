@@ -29,6 +29,12 @@ tav_client = TavilyClient(tav_key)
 SHELL_TIMEOUT_SECONDS = 60
 
 def run_shell(command: str) -> str:
+    """Runs a shell command on the user's computer and returns the output. Use this to
+    interact with the file system, run scripts, or execute system commands.
+
+    Args:
+        command: The shell command to run.
+    """
     try:
         result = subprocess.run(
             command,
@@ -46,15 +52,30 @@ def run_shell(command: str) -> str:
         return f"Error: {e}"
 
 def save_memory(key: str, value: str) -> str:
+    """Saves a key-value pair to the bot's memory. Use this to remember important
+    information about the user, such as their name, preferences, goals, or facts
+    about their life.
+
+    Args:
+        key: The key to identify the memory.
+        value: The value to remember.
+    """
     add_to_memory(key, value)
     return f"Memory saved: {key} = {value}"
 
 def delete_memory(key: str) -> str:
+    """Deletes a key-value pair from the bot's memory. Use this to remove information
+    that is no longer relevant or that the user wants to forget.
+
+    Args:
+        key: The key of the memory to delete.
+    """
     if delete_memory_db(key):
         return f"Memory deleted: {key}"
     return f"Memory not found: {key}"
 
 def read_memory() -> str:
+    """Reads the bot's saved memory and returns it to you."""
     try:
         memory = read_memory_db()  # your existing db function
         if not memory:
@@ -65,6 +86,16 @@ def read_memory() -> str:
 
 
 def schedule_task(when: str, task: str) -> str:
+    """Schedules a task to be executed automatically at a specific future time, using the
+    same tools available now (e.g. send an email, create a file, post a calendar event).
+    Use the current date/time from the system info to resolve relative times like
+    'in 30 minutes' or 'at 5pm'. The task description should be self-contained and
+    specific, since it will be executed without further input from the user.
+
+    Args:
+        when: When to run the task, as an RFC3339 datetime with offset, e.g. 2026-06-12T17:00:00-04:00.
+        task: A self-contained description of exactly what to do, including all details needed (recipients, file names/content, etc.).
+    """
     try:
         dt = datetime.fromisoformat(when)
         chat_id = get_setting("chat_id")
@@ -77,6 +108,11 @@ def schedule_task(when: str, task: str) -> str:
 
 
 def list_directory(path: str = ".") -> str:
+    """Returns the directory list of whatever path is inputted.
+
+    Args:
+        path: The path to list.
+    """
     try:
         # normalize the path so forward and back slashes both work
         path = os.path.normpath(path)
@@ -93,6 +129,11 @@ def list_directory(path: str = ".") -> str:
         return f"Error: {e}"
 
 def read_file(file_path: str) -> str:
+    """Reads a given path to a file, and returns the contents of the file.
+
+    Args:
+        file_path: The path to read.
+    """
     try:
         with open(file_path, "r", encoding="utf-8") as file:
             content = file.read()
@@ -101,6 +142,13 @@ def read_file(file_path: str) -> str:
         return f"Error: {e}"
 
 def write_file(path: str, content: str, binary: bool = False) -> str:
+    """Writes a file to whatever path is inputted.
+
+    Args:
+        path: The path to write a file to.
+        content: The content of the file (base64-encoded if binary is true).
+        binary: Set to true if the content is base64-encoded binary data.
+    """
     try:
         if binary:
             with open(path, "wb") as f:
@@ -150,6 +198,13 @@ def _user_search_roots() -> list:
     return [f for f in real if not any(f != other and f.startswith(other + os.sep) for other in real)]
 
 def find_file(filename: str) -> str:
+    """Searches for a file by name in the user's Desktop, Documents, and Downloads
+    folders. Use this when the user wants to find a file but doesn't know the exact
+    path. Returns at most 50 matches.
+
+    Args:
+        filename: The file name (or part of it) to look for.
+    """
     matches = []
     for search_root in _user_search_roots():
         for root, dirs, files in os.walk(search_root):
@@ -163,6 +218,12 @@ def find_file(filename: str) -> str:
     return "\n".join(matches) if matches else "No files found"
 
 def move_file(source: str, destination: str) -> str:
+    """Moves a file from a given source to a given destination.
+
+    Args:
+        source: The path of the file you want moved.
+        destination: The path of where the file is going.
+    """
     try:
         shutil.move(source,destination)
         return(f"{source} moved to {destination}")
@@ -170,6 +231,11 @@ def move_file(source: str, destination: str) -> str:
         return f"Error: {e}"
 
 def web_search(query: str) -> str:
+    """Searches the web. Takes a query input, returns a formulated answer, as well as sources.
+
+    Args:
+        query: What you want to search up.
+    """
     try:
         response = tav_client.search(query=query, max_results=5, include_answer=True)
         answer = response.get("answer", "")
@@ -382,28 +448,71 @@ class BrowserSession:
 _browser_session = BrowserSession()
 
 async def browser_navigate(url: str) -> Union[str, tuple[str, str]]:
+    """Goes to a given URL and returns the screenshot data.
+
+    Args:
+        url: The website you want to go to.
+    """
     return await _browser_session.navigate(url)
 
 def browser_current_url() -> str:
+    """Returns the current browser URL. Use to see if you actually need to change URLs."""
     return _browser_session.get_current_url()
 
 async def browser_screenshot() -> str:
+    """Takes a screenshot of the current browser page and returns it. Use this to see
+    the current state of the page after any action."""
     return await _browser_session.screenshot()
 
 async def browser_get_elements(screenshot: bool = False) -> Union[str, tuple[str, str]]:
+    """Gives you a text map, and an annotated image of all the elements on a website.
+    Takes a boolean, which determines if you need the annotated screenshot.
+
+    Args:
+        screenshot: Returns a screenshot with the elements annotated if set to true.
+    """
     return await _browser_session.get_elements(screenshot)
 
 async def browser_click_element(index: int) -> str:
+    """Allows you to click an element in the text map generated by browser_get_elements.
+    Takes the index of the element, returns the updated screen after you click it.
+
+    Args:
+        index: The index of the element to click, from the element map.
+    """
     return await _browser_session.click_element(index)
 
 async def browser_click(x: int, y: int) -> str:
+    """Clicks at whatever coordinate you want, waits for it to load, and returns a
+    screenshot of what happened.
+
+    Args:
+        x: The X-axis of where you want to click.
+        y: The Y-axis of where you want to click.
+    """
     return await _browser_session.click(x, y)
 
 async def browser_type(text: str, press_enter: bool = False) -> str:
+    """Types text into the currently focused element. Set press_enter=True to immediately
+    submit/confirm afterward (e.g. search bars, login forms, chat inputs, game guesses
+    like Wordle) - this is usually what you want instead of typing and then taking a
+    separate action to submit.
+
+    Args:
+        text: Whatever message you want to type.
+        press_enter: Set to true to press Enter right after typing, submitting/confirming the input. Only leave false if you specifically need to type without submitting (e.g. a multi-line text area).
+    """
     return await _browser_session.type_text(text, press_enter)
 
 async def browser_scroll(direction: str, amount: int = 300) -> str:
+    """Scrolls up or down depending on what's passed in.
+
+    Args:
+        direction: Takes either 'up' or 'down' as directions to scroll.
+        amount: How much to scroll up or down. Defaults to 300.
+    """
     return await _browser_session.scroll(direction, amount)
 
 async def browser_go_back() -> str:
+    """Goes back to the previous page."""
     return await _browser_session.go_back()
