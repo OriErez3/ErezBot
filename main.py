@@ -547,6 +547,11 @@ tool_dict = {
     "schedule_task": t.schedule_task,
 }
 screenshot_tools = {"browser_navigate", "browser_screenshot", "browser_click", "browser_type", "browser_scroll", "browser_click_element", "browser_go_back"}
+#Tools where repeating the exact same call is legitimate - observing state again (the page
+#or inbox may have changed) or paging through content (scroll). These skip the duplicate
+#check; the iteration cap still limits them. Action tools (write_file, gmail_send_email,
+#browser_click...) keep the strict check - repeating those identically means a stuck loop.
+duplicate_exempt_tools = {"browser_screenshot", "browser_get_elements", "browser_current_url", "browser_scroll", "read_memory", "read_file", "list_directory", "gmail_list_messages", "gmail_read_message", "calendar_list_events", "drive_list_files", "drive_read_file"}
 MAX_TOOL_ITERATIONS = 20
 PERSIST_MAX_TOOL_ITERATIONS = 100
 KEEP_RECENT_SCREENSHOTS = 2
@@ -581,6 +586,8 @@ def _validate_tool_registrations() -> None:
         )
     if not screenshot_tools <= registered:
         raise RuntimeError(f"screenshot_tools has unknown tools: {screenshot_tools - registered}")
+    if not duplicate_exempt_tools <= registered:
+        raise RuntimeError(f"duplicate_exempt_tools has unknown tools: {duplicate_exempt_tools - registered}")
 
 _validate_tool_registrations()
 
@@ -682,7 +689,7 @@ async def _run_tool_loop(chat: Any, response: Any, persist_mode: bool = False) -
                 result = "You've taken too many actions on this task. Stop here and respond to the user now, summarizing what you've done so far and what's left."
                 give_up = True
                 stop_executing = True
-            elif call_key in seen_calls:
+            elif call_key in seen_calls and tool_name not in duplicate_exempt_tools:
                 if persist_mode:
                     result = "You've already tried that exact call. Try a different approach instead of repeating it."
                 else:
