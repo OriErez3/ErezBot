@@ -419,6 +419,30 @@ tools = types.Tool(
                 required=["file_id"]
             )),
             types.FunctionDeclaration(
+            name="schedule_task",
+            description="Schedules a task to be executed automatically at a specific future time, using "
+                         "the same tools available now (e.g. send an email, create a file, post a "
+                         "calendar event). Use the current date/time from the system info to resolve "
+                         "relative times like 'in 30 minutes' or 'at 5pm'. The task description should "
+                         "be self-contained and specific, since it will be executed without further "
+                         "input from the user.",
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={
+                    "when": types.Schema(
+                        type=types.Type.STRING,
+                        description="When to run the task, as an RFC3339 datetime with offset, e.g. "
+                                     "2026-06-12T17:00:00-04:00."
+                    ),
+                    "task": types.Schema(
+                        type=types.Type.STRING,
+                        description="A self-contained description of exactly what to do, including all "
+                                     "details needed (recipients, file names/content, etc.)."
+                    )
+                },
+                required=["when", "task"]
+            )),
+            types.FunctionDeclaration(
             name="drive_upload_file",
             description="Creates a new file with the given text content in the user's Google Drive.",
             parameters=types.Schema(
@@ -516,6 +540,7 @@ tool_dict = {
     "drive_list_files": gs.drive_list_files,
     "drive_read_file": gs.drive_read_file,
     "drive_upload_file": gs.drive_upload_file,
+    "schedule_task": t.schedule_task,
 }
 screenshot_tools = {"browser_navigate", "browser_screenshot", "browser_click", "browser_type", "browser_scroll", "browser_click_element", "browser_go_back"}
 MAX_TOOL_ITERATIONS = 20
@@ -533,6 +558,12 @@ CHECKIN_PROMPT = (
     "email you report. If there's nothing new and noteworthy, reply with exactly: "
     "NOTHING_TO_REPORT"
 )
+SCHEDULED_TASK_PROMPT = (
+    "[Scheduled task] The user previously asked you to do the following at this exact time. "
+    "It is pre-approved - complete it now using your tools without asking for confirmation, "
+    "then briefly tell the user what you did.\n\nTask: {task}"
+)
+SCHEDULED_TASK_POLL_SECONDS = 30
 # Matches raw element-map lines (e.g. "[12] a: 'text' at (100, 200)") or pasted-HTML fragments
 INVALID_REPLY_PATTERN = re.compile(r"^\[\d+\]\s+\w+:|target=\"_blank\"|utm_source=")
 
@@ -759,7 +790,22 @@ async def proactive_check(context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     await context.bot.send_message(chat_id=int(chat_id), text=final_text)
     add_to_conversation("model", final_text)
-        
+
+async def check_scheduled_tasks(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Runs and clears any scheduled tasks whose due time has passed, using the full tool loop
+    so the model can actually act (send emails, create files, etc.), then reports back to the
+    user."""
+    now_ts = datetime.now().timestamp()
+    for task in database.get_due_tasks(now_ts):
+        database.delete_scheduled_task(task["id"])
+        try:
+            final_text, _ = await _generate_response(SCHEDULED_TASK_PROMPT.format(task=task["task"]))
+        except Exception:
+            logger.exception("Scheduled task failed")
+            final_text = f"I tried to run a scheduled task but hit an error: {task['task']}"
+        await context.bot.send_message(chat_id=int(task["chat_id"]), text=final_text)
+        add_to_conversation("model", final_text)
+
 
 def main() -> None:
     application = ApplicationBuilder().token(telegram_key).build() # type: ignore
@@ -770,6 +816,11 @@ def main() -> None:
         proactive_check,
         interval=CHECKIN_INTERVAL_MINUTES * 60,
         first=CHECKIN_INTERVAL_MINUTES * 60,
+    )
+    application.job_queue.run_repeating( #type: ignore
+        check_scheduled_tasks,
+        interval=SCHEDULED_TASK_POLL_SECONDS,
+        first=SCHEDULED_TASK_POLL_SECONDS,
     )
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, respond))
     application.run_polling(allowed_updates=telegram.Update.ALL_TYPES)
