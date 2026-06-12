@@ -16,7 +16,6 @@ import logging
 import re
 from datetime import datetime
 from typing import Any
-#type: ignore
 load_dotenv()
 logging.basicConfig(
     level=logging.INFO,
@@ -82,7 +81,9 @@ tools = types.Tool(
 
 #Test to make sure everything is working
 async def start(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.message.reply_text("Hello! I'm your Google AI assistant.") # type: ignore
+    if update.message is None:
+        return
+    await update.message.reply_text("Hello! I'm your Google AI assistant.")
 ##- Username: {username}
 #- Current directory: {cwd}
 def build_system_instruction(memory: str, browser_url: str, now: str, persist_mode: bool = False) -> str:
@@ -319,13 +320,16 @@ async def _generate_response(prompt: str, persist_mode: bool = False) -> tuple[s
     return _finalize_reply(response, give_up), give_up
 
 async def respond(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    #Edited messages, channel posts, reactions etc. arrive with message=None - nothing to respond to
+    if update.message is None or update.message.text is None or update.effective_chat is None:
+        return
     try:
-        user_message = update.message.text # type: ignore
-        chat_id = str(update.effective_chat.id) #type: ignore #Captures where to send proactive/unprompted messages later
+        user_message = update.message.text
+        chat_id = str(update.effective_chat.id) #Captures where to send proactive/unprompted messages later
         if database.get_setting("chat_id") != chat_id:
             database.set_setting("chat_id", chat_id)
-        add_to_conversation("user", user_message)#type: ignore #Saves the user's message to the conversation history in the database
-        final_text, _ = await _generate_response(user_message, PERSIST_MODE) #type: ignore
+        add_to_conversation("user", user_message) #Saves the user's message to the conversation history in the database
+        final_text, _ = await _generate_response(user_message, PERSIST_MODE)
         add_to_conversation("model", final_text) #Saves the AI's response to the conversation history in the database
         await update.message.reply_text(final_text) #Sends the AI's response back to the user on Telegram
     except Exception as e:
@@ -344,17 +348,21 @@ async def respond(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE) -
     
    
 async def clear(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message is None:
+        return
     database.clear_conversation()
-    await update.message.reply_text("Conversation cleared!") #type: ignore
+    await update.message.reply_text("Conversation cleared!")
 
 async def toggle_persist(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message is None:
+        return
     global PERSIST_MODE
     PERSIST_MODE = not PERSIST_MODE
     if PERSIST_MODE:
         status = "ON - I won't give up on a task until it's done or I hit an API error."
     else:
         status = "OFF."
-    await update.message.reply_text(f"Persistent mode is now {status}") #type: ignore
+    await update.message.reply_text(f"Persistent mode is now {status}")
 
 async def proactive_check(context: ContextTypes.DEFAULT_TYPE) -> None:
     """Periodically asks the model to check for anything noteworthy (emails, calendar events,
