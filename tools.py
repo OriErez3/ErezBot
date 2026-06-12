@@ -114,22 +114,52 @@ def write_file(path: str, content: str, binary: bool = False) -> str:
 
 
 
+FIND_FILE_MAX_MATCHES = 50
+#Hidden/system dirs that make walking user folders slow and full of junk results
+FIND_FILE_SKIP_DIRS = {"AppData", "node_modules", "__pycache__", "$RECYCLE.BIN"}
+#Registry value names for Desktop, Documents, Downloads in User Shell Folders
+_SHELL_FOLDER_VALUES = ("Desktop", "Personal", "{374DE290-123F-4565-9164-39C4925E467B}")
+
+def _user_search_roots() -> list:
+    """Returns the real Desktop/Documents/Downloads paths. Windows can relocate these
+    (on this machine they live on D:\\, not under C:\\Users), and the actual locations
+    are recorded in the registry - blindly using ~/Desktop etc. would search the wrong
+    (often empty) folders."""
+    folders = []
+    try:
+        import winreg
+        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                             r"Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders")
+        for value_name in _SHELL_FOLDER_VALUES:
+            try:
+                raw, _ = winreg.QueryValueEx(key, value_name)
+                if raw:
+                    folders.append(os.path.expandvars(raw))
+            except OSError:
+                pass
+    except Exception:
+        pass  # not on Windows or registry unreadable - fall back to the defaults below
+    for name in ("Desktop", "Documents", "Downloads"):
+        folders.append(os.path.join(os.path.expanduser("~"), name))
+    #Keep existing dirs, dedupe, and drop any root nested inside another root
+    real = []
+    for f in folders:
+        f = os.path.normpath(f)
+        if os.path.isdir(f) and f not in real:
+            real.append(f)
+    return [f for f in real if not any(f != other and f.startswith(other + os.sep) for other in real)]
+
 def find_file(filename: str) -> str:
-    search_paths = [
-        os.path.expanduser("~"),  # home directory
-        os.path.expanduser("~/Desktop"),
-        os.path.expanduser("~/Documents"),
-        os.path.expanduser("~/Downloads"),
-    ]
-
     matches = []
-    for path in search_paths:
-        if os.path.exists(path):
-            for root, dirs, files in os.walk(path):
-                for file in files:
-                    if filename.lower() in file.lower():
-                        matches.append(os.path.join(root, file))
-
+    for search_root in _user_search_roots():
+        for root, dirs, files in os.walk(search_root):
+            #Prune in place so os.walk never descends into hidden/system dirs
+            dirs[:] = [d for d in dirs if not d.startswith(".") and d not in FIND_FILE_SKIP_DIRS]
+            for file in files:
+                if filename.lower() in file.lower():
+                    matches.append(os.path.join(root, file))
+                    if len(matches) >= FIND_FILE_MAX_MATCHES:
+                        return "\n".join(matches) + f"\n... stopped at {FIND_FILE_MAX_MATCHES} matches - use a more specific name to narrow it down."
     return "\n".join(matches) if matches else "No files found"
 
 def move_file(source: str, destination: str) -> str:
