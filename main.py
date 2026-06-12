@@ -38,440 +38,47 @@ ALLOWED_USER_ID = int(allowed_user_id)
 client = genai.Client(api_key=gemini_key)
 
 os_name = platform.system()
-#Loads the tools for the AI to use. 
+#Tool declarations are generated from the functions in tool_dict below: the signature
+#(parameter names, type hints, defaults) becomes the schema and the docstring becomes
+#the description the model reads. To add a tool, write the function and register it here.
+tool_dict = {
+    "run_shell": t.run_shell,
+    "list_directory": t.list_directory,
+    "read_file": t.read_file,
+    "write_file": t.write_file,
+    "save_memory": t.save_memory,
+    "delete_memory": t.delete_memory,
+    "read_memory": t.read_memory,
+    "find_file": t.find_file,
+    "move_file": t.move_file,
+    "web_search": t.web_search,
+    "browser_navigate": t.browser_navigate,
+    "browser_screenshot": t.browser_screenshot,
+    "browser_click": t.browser_click,
+    "browser_type": t.browser_type,
+    "browser_scroll": t.browser_scroll,
+    "browser_get_elements": t.browser_get_elements,
+    "browser_click_element" : t.browser_click_element,
+    "browser_go_back": t.browser_go_back,
+    "browser_current_url": t.browser_current_url,
+    "gmail_list_messages": gs.gmail_list_messages,
+    "gmail_read_message": gs.gmail_read_message,
+    "gmail_send_email": gs.gmail_send_email,
+    "gmail_mark_as_read": gs.gmail_mark_as_read,
+    "calendar_list_events": gs.calendar_list_events,
+    "calendar_create_event": gs.calendar_create_event,
+    "drive_list_files": gs.drive_list_files,
+    "drive_read_file": gs.drive_read_file,
+    "drive_upload_file": gs.drive_upload_file,
+    "schedule_task": t.schedule_task,
+}
+
 tools = types.Tool(
     function_declarations=[
-        types.FunctionDeclaration(
-            name="run_shell",
-            description="Runs a shell command on the user's computer and returns the output. Use this to interact with the file system, run scripts, or execute system commands.",
-            parameters=types.Schema(
-                type=types.Type.OBJECT,
-                properties={
-                    "command": types.Schema(
-                        type=types.Type.STRING,
-                        description="The shell command to run"
-                    )
-                },
-                required=["command"]
-            )
-        ),
-        types.FunctionDeclaration(
-            name="save_memory",
-            description="Saves a key-value pair to the bot's memory. Use this to remember important information about the user, such as their name, preferences, goals, or facts about their life.",
-            parameters=types.Schema(
-                type=types.Type.OBJECT,
-                properties={
-                    "key": types.Schema(
-                        type=types.Type.STRING,
-                        description="The key to identify the memory"
-                    ),
-                    "value": types.Schema(
-                        type=types.Type.STRING,
-                        description="The value to remember"
-                    )
-                },
-                required=["key", "value"]
-            )
-        ),
-        types.FunctionDeclaration(
-            name="delete_memory",
-            description="Deletes a key-value pair from the bot's memory. Use this to remove information that is no longer relevant or that the user wants to forget.",
-            parameters=types.Schema(
-                type=types.Type.OBJECT,
-                properties={
-                    "key": types.Schema(
-                        type=types.Type.STRING,
-                        description="The key of the memory to delete"
-                    )
-                },
-                required=["key"]
-            )
-        ),
-        types.FunctionDeclaration(
-            name="list_directory",
-            description="Returns the directory list of whatever path is inputted.",
-            parameters=types.Schema(
-                type=types.Type.OBJECT,
-                properties={
-                    "path": types.Schema(
-                        type=types.Type.STRING,
-                        description="The path to list."
-                    )
-                },
-                required=["path"]
-            )
-            ),
-        types.FunctionDeclaration(
-            name="read_file",
-            description="Reads a given path to a file, and returns the contents of the file. ",
-            parameters=types.Schema(
-                type=types.Type.OBJECT,
-                properties={
-                    "file_path": types.Schema(
-                        type=types.Type.STRING,
-                        description="The path to read."
-                    )
-                },
-                required=["file_path"]
-            )
-            ),
-        types.FunctionDeclaration(
-            name="write_file",
-            description="Writes a file to whatever path is inputted. Takes three inputs, the path, the content of the file, and whether the file in binary or not",
-            parameters=types.Schema(
-                type=types.Type.OBJECT,
-                properties={
-                    "path": types.Schema(
-                        type=types.Type.STRING,
-                        description="The path to write a file to."
-                    ),
-                    "content": types.Schema(
-                        type=types.Type.STRING,
-                        description="The content of whats in the file."
-                    ),
-                    "binary": types.Schema(
-                        type=types.Type.BOOLEAN,
-                        description="Determines whether the content is binary or not."
-                    )
-                },
-                required=["path","content"]
-            )),
-        types.FunctionDeclaration(
-            name="find_file",
-            description="Searches for a file by name in common directories including Desktop, Documents, and Downloads. Use this when the user wants to find a file but doesn't know the exact path.",
-            parameters=types.Schema(
-                type=types.Type.OBJECT,
-                properties={
-                    "filename": types.Schema(
-                        type=types.Type.STRING,
-                        description="The file you want to look for"
-                    )
-                },
-                required=["filename"]
-            )),
-        types.FunctionDeclaration(
-        name="move_file",
-        description="Moves a file from a given source to a given destination.",
-        parameters=types.Schema(
-            type=types.Type.OBJECT,
-            properties={
-                "source": types.Schema(
-                    type=types.Type.STRING,
-                    description="The path of the file you want moved"
-                    ),
-                "destination": types.Schema(
-                    type=types.Type.STRING,
-                    description="The path of where the file is going"
-                    )
-                },
-                required=["source","destination"]
-            )),
-        types.FunctionDeclaration(
-        name="web_search",
-        description="Searches the web. Takes a query input, returns a formulated answer, as well as sources.",
-        parameters=types.Schema(
-            type=types.Type.OBJECT,
-            properties={
-                "query": types.Schema(
-                    type=types.Type.STRING,
-                    description="What you want to search up."
-                    )
-                },
-                required=["query"]
-            )),
-        types.FunctionDeclaration(
-        name="browser_navigate",
-        description="Goes to a given URL and returns the screenshot data.",
-        parameters=types.Schema(
-            type=types.Type.OBJECT,
-            properties={
-                "url": types.Schema(
-                    type=types.Type.STRING,
-                    description="The website you want to go"
-                    )
-                },
-                required=["url"]
-            )),
-            types.FunctionDeclaration(
-            name="browser_screenshot",
-            description="Takes a screenshot of the current browser page and returns it. Use this to see the current state of the page after any action.",
-            parameters=types.Schema(
-                type=types.Type.OBJECT,
-                properties={}
-            )),
-            types.FunctionDeclaration(
-            name="browser_click",
-            description="Clicks at whatever coordinate you want, waits for it to load, and returns a screenshot of what happened",
-            parameters=types.Schema(
-                type=types.Type.OBJECT,
-                properties={
-                    "x": types.Schema(
-                        type=types.Type.INTEGER,
-                        description="The X-axis of where you want to click"
-                    ),
-                    "y": types.Schema(
-                        type=types.Type.INTEGER,
-                        description="The Y-axis of where you want to click"
-                    )
-                },
-                required=["x","y"]
-            )),
-            types.FunctionDeclaration(
-            name="browser_type",
-            description="Types text into the currently focused element. Set press_enter=True to immediately submit/confirm afterward (e.g. search bars, login forms, chat inputs, game guesses like Wordle) - this is usually what you want instead of typing and then taking a separate action to submit.",
-            parameters=types.Schema(
-                type=types.Type.OBJECT,
-                properties={
-                    "text": types.Schema(
-                        type=types.Type.STRING,
-                        description="Whatever message you want to type."
-                    ),
-                    "press_enter": types.Schema(
-                        type=types.Type.BOOLEAN,
-                        description="Set to true to press Enter right after typing, submitting/confirming the input. Only leave false if you specifically need to type without submitting (e.g. a multi-line text area)."
-                    )
-                },
-                required=["text"]
-            )),
-            types.FunctionDeclaration(
-            name="browser_scroll",
-            description="Scrolls up or down depending on whats passed in.",
-            parameters=types.Schema(
-                type=types.Type.OBJECT,
-                properties={
-                    "direction": types.Schema(
-                        type=types.Type.STRING,
-                        description="Takes either up or down as directions to scroll."
-                    ),
-                    "amount": types.Schema(
-                        type=types.Type.INTEGER,
-                        description="Used to define how much to scroll up or down. Defaults to 300"
-                    )
-                },
-                required=["direction"]
-            )),
-            types.FunctionDeclaration(
-            name="browser_click_element",
-            description="Allows you to click an element in the text map generated by browser_screenshot_annotated. Takes the index of the element, returns the updated screen after you click the button.",
-            parameters=types.Schema(
-                type=types.Type.OBJECT,
-                properties={"index": types.Schema(
-                    type=types.Type.INTEGER,
-                    description="Clicks the index of the integer given for you."
-                )},
-                required=["index"]         
-            )),
-            types.FunctionDeclaration(
-            name="browser_get_elements",
-            description="Gives you a text map, and an annotated image of all the elements on a website. Takes a boolean, which determines if you need the annotated screenshot.",
-            parameters=types.Schema(
-                type=types.Type.OBJECT,
-                properties={"screenshot": types.Schema(
-                    type=types.Type.BOOLEAN,
-                    description="Returns a screenshot with the elements annotated if set to true"
-                )}
-                    
-            )),
-            types.FunctionDeclaration(
-            name="browser_go_back",
-            description="Goes back to the previous page.",
-            parameters=types.Schema(
-                type=types.Type.OBJECT,
-                properties={}         
-            )),
-            types.FunctionDeclaration(
-            name="read_memory",
-            description="Reads the memory and returns it to you",
-            parameters=types.Schema(
-                type=types.Type.OBJECT,
-                properties={}         
-            )),
-            types.FunctionDeclaration(
-            name="browser_current_url",
-            description="Returns the current browser URL. Use to see if you actually need to change URLs.",
-            parameters=types.Schema(
-                type=types.Type.OBJECT,
-                properties={}
-            )),
-            types.FunctionDeclaration(
-            name="gmail_list_messages",
-            description="Lists recent Gmail messages, optionally filtered with a Gmail search query. Returns each message's id, sender, subject, date, and a snippet. Use the id with gmail_read_message to see the full message.",
-            parameters=types.Schema(
-                type=types.Type.OBJECT,
-                properties={
-                    "max_results": types.Schema(
-                        type=types.Type.INTEGER,
-                        description="Maximum number of messages to return. Defaults to 10."
-                    ),
-                    "query": types.Schema(
-                        type=types.Type.STRING,
-                        description="Optional Gmail search query, e.g. 'is:unread' or 'from:someone@example.com'."
-                    )
-                }
-            )),
-            types.FunctionDeclaration(
-            name="gmail_read_message",
-            description="Reads the full content (sender, subject, date, body) of a Gmail message by id.",
-            parameters=types.Schema(
-                type=types.Type.OBJECT,
-                properties={
-                    "message_id": types.Schema(
-                        type=types.Type.STRING,
-                        description="The id of the message, from gmail_list_messages."
-                    )
-                },
-                required=["message_id"]
-            )),
-            types.FunctionDeclaration(
-            name="gmail_send_email",
-            description="Sends an email from the user's Gmail account.",
-            parameters=types.Schema(
-                type=types.Type.OBJECT,
-                properties={
-                    "to": types.Schema(
-                        type=types.Type.STRING,
-                        description="Recipient email address."
-                    ),
-                    "subject": types.Schema(
-                        type=types.Type.STRING,
-                        description="Email subject line."
-                    ),
-                    "body": types.Schema(
-                        type=types.Type.STRING,
-                        description="Email body text."
-                    )
-                },
-                required=["to", "subject", "body"]
-            )),
-            types.FunctionDeclaration(
-            name="gmail_mark_as_read",
-            description="Marks a Gmail message as read so it won't show up in 'is:unread' searches again.",
-            parameters=types.Schema(
-                type=types.Type.OBJECT,
-                properties={
-                    "message_id": types.Schema(
-                        type=types.Type.STRING,
-                        description="The id of the message, from gmail_list_messages."
-                    )
-                },
-                required=["message_id"]
-            )),
-            types.FunctionDeclaration(
-            name="calendar_list_events",
-            description="Lists the user's upcoming Google Calendar events, soonest first.",
-            parameters=types.Schema(
-                type=types.Type.OBJECT,
-                properties={
-                    "max_results": types.Schema(
-                        type=types.Type.INTEGER,
-                        description="Maximum number of events to return. Defaults to 10."
-                    )
-                }
-            )),
-            types.FunctionDeclaration(
-            name="calendar_create_event",
-            description="Creates an event on the user's primary Google Calendar. Use the current date/time from the system info to resolve relative dates like 'tomorrow' or 'next Monday'.",
-            parameters=types.Schema(
-                type=types.Type.OBJECT,
-                properties={
-                    "summary": types.Schema(
-                        type=types.Type.STRING,
-                        description="Event title."
-                    ),
-                    "start": types.Schema(
-                        type=types.Type.STRING,
-                        description="Start time as an RFC3339 datetime with offset, e.g. 2026-06-12T15:00:00-04:00."
-                    ),
-                    "end": types.Schema(
-                        type=types.Type.STRING,
-                        description="End time as an RFC3339 datetime with offset, e.g. 2026-06-12T16:00:00-04:00."
-                    ),
-                    "description": types.Schema(
-                        type=types.Type.STRING,
-                        description="Optional event description."
-                    )
-                },
-                required=["summary", "start", "end"]
-            )),
-            types.FunctionDeclaration(
-            name="drive_list_files",
-            description="Lists files in the user's Google Drive, most recently modified first, optionally filtered with a Drive search query.",
-            parameters=types.Schema(
-                type=types.Type.OBJECT,
-                properties={
-                    "query": types.Schema(
-                        type=types.Type.STRING,
-                        description="Optional Drive search query, e.g. \"name contains 'budget'\"."
-                    ),
-                    "max_results": types.Schema(
-                        type=types.Type.INTEGER,
-                        description="Maximum number of files to return. Defaults to 10."
-                    )
-                }
-            )),
-            types.FunctionDeclaration(
-            name="drive_read_file",
-            description="Reads the text content of a file in the user's Google Drive by id (Google Docs/Sheets/Slides are exported as text/CSV).",
-            parameters=types.Schema(
-                type=types.Type.OBJECT,
-                properties={
-                    "file_id": types.Schema(
-                        type=types.Type.STRING,
-                        description="The id of the file, from drive_list_files."
-                    )
-                },
-                required=["file_id"]
-            )),
-            types.FunctionDeclaration(
-            name="schedule_task",
-            description="Schedules a task to be executed automatically at a specific future time, using "
-                         "the same tools available now (e.g. send an email, create a file, post a "
-                         "calendar event). Use the current date/time from the system info to resolve "
-                         "relative times like 'in 30 minutes' or 'at 5pm'. The task description should "
-                         "be self-contained and specific, since it will be executed without further "
-                         "input from the user.",
-            parameters=types.Schema(
-                type=types.Type.OBJECT,
-                properties={
-                    "when": types.Schema(
-                        type=types.Type.STRING,
-                        description="When to run the task, as an RFC3339 datetime with offset, e.g. "
-                                     "2026-06-12T17:00:00-04:00."
-                    ),
-                    "task": types.Schema(
-                        type=types.Type.STRING,
-                        description="A self-contained description of exactly what to do, including all "
-                                     "details needed (recipients, file names/content, etc.)."
-                    )
-                },
-                required=["when", "task"]
-            )),
-            types.FunctionDeclaration(
-            name="drive_upload_file",
-            description="Creates a new file with the given text content in the user's Google Drive.",
-            parameters=types.Schema(
-                type=types.Type.OBJECT,
-                properties={
-                    "name": types.Schema(
-                        type=types.Type.STRING,
-                        description="Name for the new file."
-                    ),
-                    "content": types.Schema(
-                        type=types.Type.STRING,
-                        description="Text content of the file."
-                    ),
-                    "mime_type": types.Schema(
-                        type=types.Type.STRING,
-                        description="MIME type of the content. Defaults to text/plain."
-                    )
-                },
-                required=["name", "content"]
-            )),
-            ])
-            
-
-            
-
+        types.FunctionDeclaration.from_callable(client=client, callable=fn)
+        for fn in tool_dict.values()
+    ]
+)
 
 #Test to make sure everything is working
 async def start(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -515,37 +122,6 @@ Tool rules:
     return instruction
 #Function to handle messages. Used the most often.
 
-tool_dict = {
-    "run_shell": t.run_shell,
-    "list_directory": t.list_directory,
-    "read_file": t.read_file,
-    "write_file": t.write_file,
-    "save_memory": t.save_memory,
-    "delete_memory": t.delete_memory,
-    "read_memory": t.read_memory,
-    "find_file": t.find_file,
-    "move_file": t.move_file,
-    "web_search": t.web_search,
-    "browser_navigate": t.browser_navigate,
-    "browser_screenshot": t.browser_screenshot,
-    "browser_click": t.browser_click,
-    "browser_type": t.browser_type,
-    "browser_scroll": t.browser_scroll,
-    "browser_get_elements": t.browser_get_elements,
-    "browser_click_element" : t.browser_click_element,
-    "browser_go_back": t.browser_go_back,
-    "browser_current_url": t.browser_current_url,
-    "gmail_list_messages": gs.gmail_list_messages,
-    "gmail_read_message": gs.gmail_read_message,
-    "gmail_send_email": gs.gmail_send_email,
-    "gmail_mark_as_read": gs.gmail_mark_as_read,
-    "calendar_list_events": gs.calendar_list_events,
-    "calendar_create_event": gs.calendar_create_event,
-    "drive_list_files": gs.drive_list_files,
-    "drive_read_file": gs.drive_read_file,
-    "drive_upload_file": gs.drive_upload_file,
-    "schedule_task": t.schedule_task,
-}
 screenshot_tools = {"browser_navigate", "browser_screenshot", "browser_click", "browser_type", "browser_scroll", "browser_click_element", "browser_go_back"}
 #Tools where repeating the exact same call is legitimate - observing state again (the page
 #or inbox may have changed) or paging through content (scroll). These skip the duplicate
@@ -577,13 +153,13 @@ SCHEDULED_TASK_POLL_SECONDS = 30
 INVALID_REPLY_PATTERN = re.compile(r"^\[\d+\]\s+\w+:|target=\"_blank\"|utm_source=")
 
 def _validate_tool_registrations() -> None:
-    declared = {fd.name for fd in tools.function_declarations} #type: ignore
+    #Declarations are generated from tool_dict, so they can't drift apart anymore - the
+    #one desync still possible is a dict key not matching its function's actual name
+    #(the model calls tools by declaration name, which from_callable takes from __name__)
+    mismatched = {name for name, fn in tool_dict.items() if fn.__name__ != name}
+    if mismatched:
+        raise RuntimeError(f"tool_dict keys don't match their function names: {mismatched}")
     registered = set(tool_dict)
-    if declared != registered:
-        raise RuntimeError(
-            f"Tool registration mismatch - declared only: {declared - registered}, "
-            f"tool_dict only: {registered - declared}"
-        )
     if not screenshot_tools <= registered:
         raise RuntimeError(f"screenshot_tools has unknown tools: {screenshot_tools - registered}")
     if not duplicate_exempt_tools <= registered:
