@@ -4,7 +4,7 @@ from dotenv import load_dotenv
 import os
 import asyncio
 from google import genai
-from google.genai import types
+from google.genai import errors, types
 from database import add_to_conversation, read_conversation, read_memory
 import tools as t
 import google_services as gs
@@ -134,7 +134,7 @@ PERSIST_MAX_TOOL_ITERATIONS = 100
 TELEGRAM_MAX_MESSAGE_CHARS = 4000 #Telegram rejects messages over 4096 chars - leave headroom
 KEEP_RECENT_SCREENSHOTS = 2
 PERSIST_MODE = False
-CHECKIN_INTERVAL_MINUTES = 60  # TODO: revert to 60 after testing proactive check-ins
+CHECKIN_INTERVAL_MINUTES = 60
 CHECKIN_PROMPT = (
     "[Automated periodic check-in] Use gmail_list_messages with query 'is:unread' to check for "
     "important new emails, and calendar_list_events to check for events starting soon. Compare "
@@ -320,6 +320,18 @@ async def _generate_response(prompt: str, persist_mode: bool = False) -> tuple[s
     response, give_up = await _run_tool_loop(chat, response, persist_mode) #Executes any tool calls the model requested
     return _finalize_reply(response, give_up), give_up
 
+def _describe_error(e: Exception) -> str:
+    """Turns an exception into a friendly user-facing message, using the API's real
+    error codes instead of string-matching the error text."""
+    if isinstance(e, errors.APIError):
+        if e.code == 429:
+            return "I've hit my API rate limit. Please wait a moment and try again."
+        if e.code == 503:
+            return "Gemini is currently unavailable. Please try again in a few minutes."
+        if e.code == 400 and "token" in str(e).lower():
+            return "The conversation is too long. Try /clear and start fresh."
+    return f"Something went wrong: {e}"
+
 def _chunk_message(text: str) -> list:
     """Splits a reply into pieces under Telegram's message length limit - sending one
     oversized message raises BadRequest and the user would get nothing at all."""
@@ -340,15 +352,8 @@ async def respond(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE) -
         for chunk in _chunk_message(final_text): #Sends the AI's response back to the user on Telegram
             await update.message.reply_text(chunk)
     except Exception as e:
-        error_message = str(e)
-        if "429" in error_message or "quota" in error_message.lower() or "exhausted" in error_message.lower():
-            await update.message.reply_text("I've hit my API rate limit. Please wait a moment and try again.")
-        elif "503" in error_message or "unavailable" in error_message.lower():
-            await update.message.reply_text("Gemini is currently unavailable. Please try again in a few minutes.")
-        elif "token" in error_message.lower():
-            await update.message.reply_text("The conversation is too long. Try /clear and start fresh.")
-        else:
-            await update.message.reply_text(f"Something went wrong: {error_message}")
+        logger.exception("Failed to handle message") #Keep a full traceback in the console, not just the Telegram reply
+        await update.message.reply_text(_describe_error(e))
    
 
    
