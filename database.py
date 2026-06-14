@@ -44,25 +44,38 @@ try:
     cursor.execute("ALTER TABLE scheduled_tasks ADD COLUMN status TEXT DEFAULT 'pending'")
 except sqlite3.OperationalError:
     pass  #column already exists
+cursor.execute('''
+    CREATE TABLE IF NOT EXISTS conversations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        title TEXT
+    )
+''')
+#Migration for databases created before conversations existed: add conversation_id to
+#existing messages (DEFAULT 1 backfills old rows) and register conversation 1 for them
+try:
+    cursor.execute("ALTER TABLE conversation ADD COLUMN conversation_id INTEGER DEFAULT 1")
+except sqlite3.OperationalError:
+    pass  #column already exists
+cursor.execute("INSERT OR IGNORE INTO conversations (id, title) VALUES (1, 'Conversation 1')")
 conn.commit()
 
-def clear_conversation():
+def clear_conversation(conversation_id: int):
     with _lock:
-        cursor.execute("DELETE FROM conversation")
+        cursor.execute("DELETE FROM conversation WHERE conversation_id = ?", (conversation_id,))
         conn.commit()
 
-def add_to_conversation(role: str, message: str):
+def add_to_conversation(role: str, message: str, conversation_id: int):
     with _lock:
         cursor.execute('''
-            INSERT INTO conversation (role, message) VALUES (?, ?)
-        ''', (role, message))
+            INSERT INTO conversation (role, message, conversation_id) VALUES (?, ?, ?)
+        ''', (role, message, conversation_id))
         conn.commit()
 
-def read_conversation(limit: int):
+def read_conversation(limit: int, conversation_id: int):
     with _lock:
         cursor.execute('''
-            SELECT role, message FROM conversation ORDER BY id DESC LIMIT ?
-        ''', (limit,))
+            SELECT role, message FROM conversation WHERE conversation_id = ? ORDER BY id DESC LIMIT ?
+        ''', (conversation_id, limit))
         rows = cursor.fetchall()
     return [{"role": row[0], "parts": [row[1]]} for row in reversed(rows)]
 
@@ -135,4 +148,35 @@ def reset_running_tasks() -> int:
 def delete_scheduled_task(task_id: int):
     with _lock:
         cursor.execute('DELETE FROM scheduled_tasks WHERE id = ?', (task_id,))
+        conn.commit()
+
+def get_active_conversation_id() -> int:
+    value = get_setting("active_conversation_id")
+    return int(value) if value else 1
+
+def set_active_conversation_id(conversation_id: int) -> None:
+    set_setting("active_conversation_id", str(conversation_id))
+
+def create_conversation() -> int:
+    with _lock:
+        cursor.execute("INSERT INTO conversations (title) VALUES (NULL)")
+        new_id = cursor.lastrowid
+        cursor.execute("UPDATE conversations SET title = ? WHERE id = ?", (f"Conversation {new_id}", new_id))
+        conn.commit()
+    return new_id #type: ignore
+
+def list_conversations():
+    with _lock:
+        cursor.execute("SELECT id, title FROM conversations ORDER BY id")
+        rows = cursor.fetchall()
+    return [{"id": row[0], "title": row[1]} for row in rows]
+
+def conversation_exists(conversation_id: int) -> bool:
+    with _lock:
+        cursor.execute("SELECT 1 FROM conversations WHERE id = ?", (conversation_id,))
+        return cursor.fetchone() is not None
+
+def rename_conversation(conversation_id: int, title: str) -> None:
+    with _lock:
+        cursor.execute("UPDATE conversations SET title = ? WHERE id = ?", (title, conversation_id))
         conn.commit()
