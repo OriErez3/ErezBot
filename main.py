@@ -455,13 +455,24 @@ async def check_scheduled_tasks(context: ContextTypes.DEFAULT_TYPE) -> None:
         add_to_conversation("model", final_text, database.get_active_conversation_id())
 
 
+async def _post_init(application: Any) -> None:
+    await application.bot.set_my_commands([
+        telegram.BotCommand("start", "Greet the bot"),
+        telegram.BotCommand("clear", "Clear the active conversation's history"),
+        telegram.BotCommand("persist", "Toggle persistent mode (don't give up until the task is done)"),
+        telegram.BotCommand("new", "Start a new conversation"),
+        telegram.BotCommand("list", "List all conversations"),
+        telegram.BotCommand("switch", "Switch to a conversation by number"),
+        telegram.BotCommand("rename", "Rename the active conversation"),
+    ])
+
 def main() -> None:
     requeued = database.reset_running_tasks()
     if requeued:
         logger.warning("Re-queued %d scheduled task(s) interrupted by a previous shutdown", requeued)
     #Only respond to the owner - the bot has shell/email access, so ignore everyone else
     user_filter = filters.User(user_id=ALLOWED_USER_ID)
-    application = ApplicationBuilder().token(telegram_key).build() # type: ignore
+    application = ApplicationBuilder().token(telegram_key).post_init(_post_init).build() # type: ignore
     application.add_handler(CommandHandler("start", start, filters=user_filter))
     application.add_handler(CommandHandler("clear", clear, filters=user_filter))
     application.add_handler(CommandHandler("persist", toggle_persist, filters=user_filter))
