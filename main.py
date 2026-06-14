@@ -306,7 +306,7 @@ async def _generate_response(prompt: str, persist_mode: bool = False) -> tuple[s
     tool loop, and returns (final_text, give_up). Does not touch the conversation history table -
     callers decide what (if anything) to record."""
     memory = read_memory() #Reads the bot's memory. This memory stores important information only.
-    conversation = read_conversation(30) #Reads the recent conversation history to provide context for the AI's response
+    conversation = read_conversation(30, database.get_active_conversation_id()) #Reads the recent conversation history to provide context for the AI's response
     contents=[types.Content(role=msg["role"], parts=[types.Part(text=msg["parts"][0])]) for msg in conversation] #Converts the conversation history into the correct format for Gemini API
     browser_url = t.browser_current_url() #Grounds the model in the browser's actual current page, regardless of what past conversation text says
     now = datetime.now().astimezone().isoformat() #Grounds the model in the current date/time for resolving relative dates (e.g. calendar events)
@@ -346,9 +346,10 @@ async def respond(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE) -
         chat_id = str(update.effective_chat.id) #Captures where to send proactive/unprompted messages later
         if database.get_setting("chat_id") != chat_id:
             database.set_setting("chat_id", chat_id)
-        add_to_conversation("user", user_message) #Saves the user's message to the conversation history in the database
+        conversation_id = database.get_active_conversation_id()
+        add_to_conversation("user", user_message, conversation_id) #Saves the user's message to the conversation history in the database
         final_text, _ = await _generate_response(user_message, PERSIST_MODE)
-        add_to_conversation("model", final_text) #Saves the AI's response to the conversation history in the database
+        add_to_conversation("model", final_text, conversation_id) #Saves the AI's response to the conversation history in the database
         for chunk in _chunk_message(final_text): #Sends the AI's response back to the user on Telegram
             await update.message.reply_text(chunk)
     except Exception as e:
@@ -362,7 +363,7 @@ async def respond(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE) -
 async def clear(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.message is None:
         return
-    database.clear_conversation()
+    database.clear_conversation(database.get_active_conversation_id())
     await update.message.reply_text("Conversation cleared!")
 
 async def toggle_persist(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -375,6 +376,47 @@ async def toggle_persist(update: telegram.Update, context: ContextTypes.DEFAULT_
     else:
         status = "OFF."
     await update.message.reply_text(f"Persistent mode is now {status}")
+
+async def new_conversation(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message is None:
+        return
+    conv_id = database.create_conversation()
+    database.set_active_conversation_id(conv_id)
+    await update.message.reply_text(f"Started Conversation {conv_id}. This is now active.")
+
+async def list_conversations_cmd(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message is None:
+        return
+    active_id = database.get_active_conversation_id()
+    lines = [
+        f"{'-> ' if c['id'] == active_id else '   '}{c['id']}. {c['title']}"
+        for c in database.list_conversations()
+    ]
+    await update.message.reply_text("\n".join(lines))
+
+async def switch_conversation(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message is None:
+        return
+    if not context.args or not context.args[0].isdigit():
+        await update.message.reply_text("Usage: /switch <number>")
+        return
+    conv_id = int(context.args[0])
+    if not database.conversation_exists(conv_id):
+        await update.message.reply_text(f"No Conversation {conv_id}. Use /list to see all conversations.")
+        return
+    database.set_active_conversation_id(conv_id)
+    await update.message.reply_text(f"Switched to Conversation {conv_id}.")
+
+async def rename_conversation_cmd(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message is None:
+        return
+    if not context.args:
+        await update.message.reply_text("Usage: /rename <name>")
+        return
+    name = " ".join(context.args)
+    active_id = database.get_active_conversation_id()
+    database.rename_conversation(active_id, name)
+    await update.message.reply_text(f"Renamed Conversation {active_id} to '{name}'.")
 
 async def proactive_check(context: ContextTypes.DEFAULT_TYPE) -> None:
     """Periodically asks the model to check for anything noteworthy (emails, calendar events,
@@ -391,7 +433,7 @@ async def proactive_check(context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     for chunk in _chunk_message(final_text):
         await context.bot.send_message(chat_id=int(chat_id), text=chunk)
-    add_to_conversation("model", final_text)
+    add_to_conversation("model", final_text, database.get_active_conversation_id())
 
 async def check_scheduled_tasks(context: ContextTypes.DEFAULT_TYPE) -> None:
     """Runs and clears any scheduled tasks whose due time has passed, using the full tool loop
@@ -410,7 +452,7 @@ async def check_scheduled_tasks(context: ContextTypes.DEFAULT_TYPE) -> None:
         database.delete_scheduled_task(task["id"])
         for chunk in _chunk_message(final_text):
             await context.bot.send_message(chat_id=int(task["chat_id"]), text=chunk)
-        add_to_conversation("model", final_text)
+        add_to_conversation("model", final_text, database.get_active_conversation_id())
 
 
 def main() -> None:
@@ -423,6 +465,10 @@ def main() -> None:
     application.add_handler(CommandHandler("start", start, filters=user_filter))
     application.add_handler(CommandHandler("clear", clear, filters=user_filter))
     application.add_handler(CommandHandler("persist", toggle_persist, filters=user_filter))
+    application.add_handler(CommandHandler("new", new_conversation, filters=user_filter))
+    application.add_handler(CommandHandler("list", list_conversations_cmd, filters=user_filter))
+    application.add_handler(CommandHandler("switch", switch_conversation, filters=user_filter))
+    application.add_handler(CommandHandler("rename", rename_conversation_cmd, filters=user_filter))
     application.job_queue.run_repeating( #type: ignore
         proactive_check,
         interval=CHECKIN_INTERVAL_MINUTES * 60,
