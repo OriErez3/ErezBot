@@ -70,6 +70,10 @@ tool_dict = {
     "drive_read_file": gs.drive_read_file,
     "drive_upload_file": gs.drive_upload_file,
     "schedule_task": t.schedule_task,
+    "run_background": t.run_background,
+    "read_process_output": t.read_process_output,
+    "list_processes": t.list_processes,
+    "stop_process": t.stop_process,
 }
 
 tools = types.Tool(

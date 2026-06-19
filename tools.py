@@ -1,5 +1,7 @@
 import logging
 import subprocess
+import threading
+from collections import deque
 from datetime import datetime
 from database import add_to_memory
 from database import read_memory as read_memory_db
@@ -7,6 +9,7 @@ from database import delete_memory as delete_memory_db
 from database import add_scheduled_task, get_setting
 import os
 import shutil
+import time
 from dotenv import load_dotenv
 from tavily import TavilyClient
 from playwright.async_api import (
@@ -50,6 +53,103 @@ def run_shell(command: str) -> str:
         return f"Error: command timed out after {SHELL_TIMEOUT_SECONDS} seconds. It may have been waiting for input - try a non-interactive variant."
     except Exception as e:
         return f"Error: {e}"
+
+_bg_processes: dict[int, dict] = {}
+_bg_lock = threading.Lock()
+_next_bg_id = 1
+
+def _drain_output(proc: subprocess.Popen, buf: deque) -> None:
+    try:
+        for line in proc.stdout:  # type: ignore
+            buf.append(line.rstrip("\n"))
+    except Exception:
+        pass
+
+def run_background(command: str, working_directory: str = "") -> str:
+    """Starts a long-running shell command in the background without blocking. Returns a
+    process ID for use with read_process_output, list_processes, and stop_process. Use
+    this for servers or watchers that run indefinitely; use run_shell for commands that
+    finish on their own.
+
+    Args:
+        command: The shell command to run.
+        working_directory: Absolute path to run the command from. Defaults to the bot working directory if omitted.
+    """
+    global _next_bg_id
+    try:
+        proc = subprocess.Popen(
+            command,
+            shell=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            cwd=working_directory if working_directory else None,
+        )
+        buf: deque = deque(maxlen=500)
+        threading.Thread(target=_drain_output, args=(proc, buf), daemon=True).start()
+        with _bg_lock:
+            proc_id = _next_bg_id
+            _next_bg_id += 1
+            _bg_processes[proc_id] = {"process": proc, "buffer": buf, "command": command}
+        time.sleep(1.5)  # let initial output accumulate before returning
+        lines = list(buf)
+        status = "running" if proc.poll() is None else f"exited with code {proc.poll()}"
+        output = "\n".join(lines) if lines else "(no output yet)"
+        return f"Process {proc_id} started ({status}).\nInitial output:\n{output}"
+    except Exception as e:
+        return f"Error: {e}"
+
+def read_process_output(process_id: int, last_n_lines: int = 50) -> str:
+    """Returns the most recent output lines from a background process.
+
+    Args:
+        process_id: The ID returned by run_background.
+        last_n_lines: How many recent lines to return. Defaults to 50.
+    """
+    with _bg_lock:
+        entry = _bg_processes.get(process_id)
+    if entry is None:
+        return f"No background process with ID {process_id}. Use list_processes to see what's running."
+    proc = entry["process"]
+    lines = list(entry["buffer"])[-last_n_lines:]
+    status = "running" if proc.poll() is None else f"exited with code {proc.poll()}"
+    output = "\n".join(lines) if lines else "(no output yet)"
+    return f"Process {process_id} ({status}):\n{output}"
+
+def list_processes() -> str:
+    """Lists all background processes started with run_background and their current status."""
+    with _bg_lock:
+        entries = list(_bg_processes.items())
+    if not entries:
+        return "No background processes running."
+    lines = []
+    for proc_id, entry in entries:
+        status = "running" if entry["process"].poll() is None else f"exited ({entry['process'].poll()})"
+        lines.append(f"[{proc_id}] {status}: {entry['command']}")
+    return "\n".join(lines)
+
+def stop_process(process_id: int) -> str:
+    """Stops a background process started with run_background.
+
+    Args:
+        process_id: The ID returned by run_background.
+    """
+    with _bg_lock:
+        entry = _bg_processes.pop(process_id, None)
+    if entry is None:
+        return f"No background process with ID {process_id}."
+    proc = entry["process"]
+    try:
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+        return f"Process {process_id} stopped."
+    except Exception as e:
+        return f"Error stopping process {process_id}: {e}"
 
 def save_memory(key: str, value: str) -> str:
     """Saves a key-value pair to the bot's memory. Use this to remember important
