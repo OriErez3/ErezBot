@@ -241,7 +241,52 @@ def _prune_old_screenshots(chat: Any, keep_recent: int = KEEP_RECENT_SCREENSHOTS
             for p in content.parts
         ]
 
-async def _run_tool_loop(chat: Any, response: Any, persist_mode: bool = False) -> tuple[Any, bool]:
+_TOOL_STATUS: dict[str, str] = {
+    "run_shell":             "Running a command...",
+    "run_background":        "Starting a background process...",
+    "read_process_output":   "Reading process output...",
+    "stop_process":          "Stopping a process...",
+    "list_processes":        "Listing processes...",
+    "write_file":            "Writing a file...",
+    "read_file":             "Reading a file...",
+    "list_directory":        "Listing files...",
+    "find_file":             "Searching for a file...",
+    "move_file":             "Moving a file...",
+    "web_search":            "Searching the web...",
+    "browser_navigate":      "Browsing the web...",
+    "browser_screenshot":    "Taking a screenshot...",
+    "browser_click":         "Clicking...",
+    "browser_click_element": "Clicking...",
+    "browser_type":          "Typing in browser...",
+    "browser_scroll":        "Scrolling...",
+    "browser_get_elements":  "Reading the page...",
+    "browser_go_back":       "Going back...",
+    "gmail_list_messages":   "Checking email...",
+    "gmail_read_message":    "Reading an email...",
+    "gmail_send_email":      "Sending an email...",
+    "gmail_mark_as_read":    "Marking email as read...",
+    "calendar_list_events":  "Checking calendar...",
+    "calendar_create_event": "Creating a calendar event...",
+    "drive_list_files":      "Listing Drive files...",
+    "drive_read_file":       "Reading a Drive file...",
+    "drive_upload_file":     "Uploading to Drive...",
+    "save_memory":           "Saving to memory...",
+    "read_memory":           "Reading memory...",
+    "schedule_task":         "Scheduling a task...",
+}
+
+async def _keep_typing(bot: Any, chat_id: int, stop: asyncio.Event) -> None:
+    while not stop.is_set():
+        try:
+            await bot.send_chat_action(chat_id=chat_id, action="typing")
+        except Exception:
+            pass
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=4.0)
+        except asyncio.TimeoutError:
+            pass
+
+async def _run_tool_loop(chat: Any, response: Any, persist_mode: bool = False, status_callback: Any = None) -> tuple[Any, bool]:
     """Repeatedly executes tool calls requested by the model until it stops calling tools,
     a duplicate call is detected, or the iteration cap is exceeded. Returns the final
     response and whether the loop gave up early.
@@ -281,6 +326,11 @@ async def _run_tool_loop(chat: Any, response: Any, persist_mode: bool = False) -
                     stop_executing = True
             else:
                 seen_calls.add(call_key)
+                if status_callback:
+                    try:
+                        await status_callback(_TOOL_STATUS.get(tool_name, f"Using {tool_name}..."))
+                    except Exception:
+                        pass
                 result = await _execute_tool(tool_name, func.args)
             parts.extend(_tool_result_parts(func, tool_name, result))
         response = await chat.send_message(parts)
@@ -306,7 +356,7 @@ def _finalize_reply(response: Any, give_up: bool) -> str:
         return "Sorry, I couldn't come up with a response there. Could you try rephrasing?"
     return final_text
 
-async def _generate_response(prompt: str, persist_mode: bool = False) -> tuple[str, bool]:
+async def _generate_response(prompt: str, persist_mode: bool = False, status_callback: Any = None) -> tuple[str, bool]:
     """Builds a chat from the stored conversation history, sends `prompt` to the model, runs the
     tool loop, and returns (final_text, give_up). Does not touch the conversation history table -
     callers decide what (if anything) to record."""
@@ -322,7 +372,7 @@ async def _generate_response(prompt: str, persist_mode: bool = False) -> tuple[s
                 system_instruction=build_system_instruction(memory, browser_url, now, persist_mode)
         ),)
     response = await chat.send_message(prompt)
-    response, give_up = await _run_tool_loop(chat, response, persist_mode) #Executes any tool calls the model requested
+    response, give_up = await _run_tool_loop(chat, response, persist_mode, status_callback) #Executes any tool calls the model requested
     return _finalize_reply(response, give_up), give_up
 
 def _describe_error(e: Exception) -> str:
@@ -346,20 +396,38 @@ async def respond(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE) -
     #Edited messages, channel posts, reactions etc. arrive with message=None - nothing to respond to
     if update.message is None or update.message.text is None or update.effective_chat is None:
         return
+    int_chat_id = update.effective_chat.id
+    status_msg = await context.bot.send_message(chat_id=int_chat_id, text="Thinking...")
+    stop_typing = asyncio.Event()
+    typing_task = asyncio.create_task(_keep_typing(context.bot, int_chat_id, stop_typing))
+
+    async def on_status(text: str) -> None:
+        try:
+            await status_msg.edit_text(text)
+        except Exception:
+            pass
+
     try:
         user_message = update.message.text
-        chat_id = str(update.effective_chat.id) #Captures where to send proactive/unprompted messages later
+        chat_id = str(int_chat_id) #Captures where to send proactive/unprompted messages later
         if database.get_setting("chat_id") != chat_id:
             database.set_setting("chat_id", chat_id)
         conversation_id = database.get_active_conversation_id()
         add_to_conversation("user", user_message, conversation_id) #Saves the user's message to the conversation history in the database
-        final_text, _ = await _generate_response(user_message, PERSIST_MODE)
+        final_text, _ = await _generate_response(user_message, PERSIST_MODE, on_status)
         add_to_conversation("model", final_text, conversation_id) #Saves the AI's response to the conversation history in the database
         for chunk in _chunk_message(final_text): #Sends the AI's response back to the user on Telegram
             await update.message.reply_text(chunk)
     except Exception as e:
         logger.exception("Failed to handle message") #Keep a full traceback in the console, not just the Telegram reply
         await update.message.reply_text(_describe_error(e))
+    finally:
+        stop_typing.set()
+        typing_task.cancel()
+        try:
+            await status_msg.delete()
+        except Exception:
+            pass
    
 
    
@@ -429,15 +497,32 @@ async def proactive_check(context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = database.get_setting("chat_id")
     if not chat_id:
         return
+    int_chat_id = int(chat_id)
+    status_msg = await context.bot.send_message(chat_id=int_chat_id, text="Checking in...")
+    stop_typing = asyncio.Event()
+    typing_task = asyncio.create_task(_keep_typing(context.bot, int_chat_id, stop_typing))
     try:
         final_text, give_up = await _generate_response(CHECKIN_PROMPT)
     except Exception:
         logger.exception("Proactive check-in failed")
+        stop_typing.set()
+        typing_task.cancel()
+        try:
+            await status_msg.delete()
+        except Exception:
+            pass
         return
+    finally:
+        stop_typing.set()
+        typing_task.cancel()
+        try:
+            await status_msg.delete()
+        except Exception:
+            pass
     if give_up or final_text.strip().upper() == "NOTHING_TO_REPORT":
         return
     for chunk in _chunk_message(final_text):
-        await context.bot.send_message(chat_id=int(chat_id), text=chunk)
+        await context.bot.send_message(chat_id=int_chat_id, text=chunk)
     add_to_conversation("model", final_text, database.get_active_conversation_id())
 
 async def check_scheduled_tasks(context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -449,14 +534,25 @@ async def check_scheduled_tasks(context: ContextTypes.DEFAULT_TYPE) -> None:
         #Mark running instead of deleting up front - if the bot crashes mid-task, the row
         #survives and gets re-queued on the next startup instead of silently vanishing
         database.mark_task_running(task["id"])
+        int_chat_id = int(task["chat_id"])
+        status_msg = await context.bot.send_message(chat_id=int_chat_id, text="Running scheduled task...")
+        stop_typing = asyncio.Event()
+        typing_task = asyncio.create_task(_keep_typing(context.bot, int_chat_id, stop_typing))
         try:
             final_text, _ = await _generate_response(SCHEDULED_TASK_PROMPT.format(task=task["task"]))
         except Exception:
             logger.exception("Scheduled task failed")
             final_text = f"I tried to run a scheduled task but hit an error: {task['task']}"
+        finally:
+            stop_typing.set()
+            typing_task.cancel()
+            try:
+                await status_msg.delete()
+            except Exception:
+                pass
         database.delete_scheduled_task(task["id"])
         for chunk in _chunk_message(final_text):
-            await context.bot.send_message(chat_id=int(task["chat_id"]), text=chunk)
+            await context.bot.send_message(chat_id=int_chat_id, text=chunk)
         add_to_conversation("model", final_text, database.get_active_conversation_id())
 
 
