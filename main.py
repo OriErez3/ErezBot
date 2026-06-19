@@ -84,14 +84,14 @@ async def start(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if update.message is None:
         return
     await update.message.reply_text("Hello! I'm your Google AI assistant.")
-##- Username: {username}
-#- Current directory: {cwd}
 def build_system_instruction(memory: str, browser_url: str, now: str, persist_mode: bool = False) -> str:
+    cwd = os.getcwd()
     instruction = f"""You are a personal AI assistant. Be helpful and concise.
 
 System info:
 - OS: {os_name}
 - Current date/time: {now}
+- Bot working directory: {cwd} (this is where the bot itself lives — NOT where user files should go)
 
 Saved memory about the user:
 {memory}
@@ -103,6 +103,7 @@ Browser state:
 Tool rules:
 - Use save_memory for important user facts, delete_memory when outdated, read_memory to recall facts
 - Use write_file, read_file, list_directory for file operations. Only use run_shell when explicitly asked
+- File paths: always use absolute paths (e.g. C:\\Users\\orier\\Desktop\\project). Never use relative paths or write files into the bot working directory unless the user explicitly asks to
 - Never give up on a task without actually attempting it first
 - Browser: only call browser_navigate for new URLs, never to save files
 - Browser: re-navigating to the page you're already on is now a safe no-op (it won't reload), but prefer browser_get_elements/browser_screenshot to inspect the current page instead of calling browser_navigate again
