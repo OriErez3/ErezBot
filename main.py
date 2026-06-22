@@ -288,17 +288,14 @@ async def _keep_typing(bot: Any, chat_id: int, stop: asyncio.Event) -> None:
         except asyncio.TimeoutError:
             pass
 
-async def _run_tool_loop(chat: Any, response: Any, persist_mode: bool = False, status_callback: Any = None, conversation_id: int = 0) -> tuple[Any, bool]:
+async def _run_tool_loop(chat: Any, response: Any, persist_mode: bool = False, status_callback: Any = None, conversation_id: int = 0) -> tuple[Any, bool, list[str]]:
     """Repeatedly executes tool calls requested by the model until it stops calling tools,
     a duplicate call is detected, or the iteration cap is exceeded. Returns the final
-    response and whether the loop gave up early.
-
-    In persist_mode, duplicate calls no longer trigger a give-up - the model is told to try a
-    different approach and keeps going - and the iteration cap is raised to
-    PERSIST_MAX_TOOL_ITERATIONS as a safety net instead of MAX_TOOL_ITERATIONS."""
+    response, whether the loop gave up early, and a compact log of every tool call made."""
     seen_calls = set()
     give_up = False
     iteration_count = 0
+    tool_entries: list[str] = []
     max_iterations = PERSIST_MAX_TOOL_ITERATIONS if persist_mode else MAX_TOOL_ITERATIONS
     while response.function_calls and not give_up: #Checks if the AI called any tools in its response
         #Execute every call in this response first, collect all the results, then answer
@@ -334,14 +331,13 @@ async def _run_tool_loop(chat: Any, response: Any, persist_mode: bool = False, s
                     except Exception:
                         pass
                 result = await _execute_tool(tool_name, func.args)
-                if conversation_id:
-                    args_summary = str(dict(func.args))[:150]
-                    result_text = result[1] if isinstance(result, tuple) else str(result)
-                    add_to_conversation("tool", f"{tool_name}({args_summary}) → {result_text[:200]}", conversation_id, is_tool_log=1)
+                args_summary = str(dict(func.args))[:150]
+                result_text = result[1] if isinstance(result, tuple) else str(result)
+                tool_entries.append(f"{tool_name}({args_summary}) → {result_text[:200]}")
             parts.extend(_tool_result_parts(func, tool_name, result))
         response = await chat.send_message(parts)
         _prune_old_screenshots(chat)
-    return response, give_up
+    return response, give_up, tool_entries
 
 def _finalize_reply(response: Any, give_up: bool) -> str:
     """Validates the model's final text, substituting a friendly message if it's empty or
@@ -362,7 +358,7 @@ def _finalize_reply(response: Any, give_up: bool) -> str:
         return "Sorry, I couldn't come up with a response there. Could you try rephrasing?"
     return final_text
 
-async def _generate_response(prompt: str, persist_mode: bool = False, status_callback: Any = None) -> tuple[str, bool]:
+async def _generate_response(prompt: str, persist_mode: bool = False, status_callback: Any = None) -> tuple[str, bool, list[str]]:
     """Builds a chat from the stored conversation history, sends `prompt` to the model, runs the
     tool loop, and returns (final_text, give_up). Does not touch the conversation history table -
     callers decide what (if anything) to record."""
@@ -381,8 +377,8 @@ async def _generate_response(prompt: str, persist_mode: bool = False, status_cal
                 system_instruction=build_system_instruction(memory, browser_url, now, persist_mode, tool_log)
         ),)
     response = await chat.send_message(prompt)
-    response, give_up = await _run_tool_loop(chat, response, persist_mode, status_callback, conversation_id) #Executes any tool calls the model requested
-    return _finalize_reply(response, give_up), give_up
+    response, give_up, tool_entries = await _run_tool_loop(chat, response, persist_mode, status_callback, conversation_id) #Executes any tool calls the model requested
+    return _finalize_reply(response, give_up), give_up, tool_entries
 
 def _describe_error(e: Exception) -> str:
     """Turns an exception into a friendly user-facing message, using the API's real
@@ -423,8 +419,8 @@ async def respond(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE) -
             database.set_setting("chat_id", chat_id)
         conversation_id = database.get_active_conversation_id()
         add_to_conversation("user", user_message, conversation_id) #Saves the user's message to the conversation history in the database
-        final_text, _ = await _generate_response(user_message, PERSIST_MODE, on_status)
-        add_to_conversation("model", final_text, conversation_id) #Saves the AI's response to the conversation history in the database
+        final_text, _, tool_entries = await _generate_response(user_message, PERSIST_MODE, on_status)
+        add_to_conversation("model", final_text, conversation_id, tool_log="\n".join(tool_entries)) #Saves the AI's response to the conversation history in the database
         for chunk in _chunk_message(final_text): #Sends the AI's response back to the user on Telegram
             await update.message.reply_text(chunk)
     except Exception as e:
@@ -511,7 +507,7 @@ async def proactive_check(context: ContextTypes.DEFAULT_TYPE) -> None:
     stop_typing = asyncio.Event()
     typing_task = asyncio.create_task(_keep_typing(context.bot, int_chat_id, stop_typing))
     try:
-        final_text, give_up = await _generate_response(CHECKIN_PROMPT)
+        final_text, give_up, tool_entries = await _generate_response(CHECKIN_PROMPT)
     except Exception:
         logger.exception("Proactive check-in failed")
         stop_typing.set()
@@ -532,7 +528,7 @@ async def proactive_check(context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     for chunk in _chunk_message(final_text):
         await context.bot.send_message(chat_id=int_chat_id, text=chunk)
-    add_to_conversation("model", final_text, database.get_active_conversation_id())
+    add_to_conversation("model", final_text, database.get_active_conversation_id(), tool_log="\n".join(tool_entries))
 
 async def check_scheduled_tasks(context: ContextTypes.DEFAULT_TYPE) -> None:
     """Runs and clears any scheduled tasks whose due time has passed, using the full tool loop
@@ -548,10 +544,11 @@ async def check_scheduled_tasks(context: ContextTypes.DEFAULT_TYPE) -> None:
         stop_typing = asyncio.Event()
         typing_task = asyncio.create_task(_keep_typing(context.bot, int_chat_id, stop_typing))
         try:
-            final_text, _ = await _generate_response(SCHEDULED_TASK_PROMPT.format(task=task["task"]))
+            final_text, _, tool_entries = await _generate_response(SCHEDULED_TASK_PROMPT.format(task=task["task"]))
         except Exception:
             logger.exception("Scheduled task failed")
             final_text = f"I tried to run a scheduled task but hit an error: {task['task']}"
+            tool_entries = []
         finally:
             stop_typing.set()
             typing_task.cancel()
@@ -562,7 +559,7 @@ async def check_scheduled_tasks(context: ContextTypes.DEFAULT_TYPE) -> None:
         database.delete_scheduled_task(task["id"])
         for chunk in _chunk_message(final_text):
             await context.bot.send_message(chat_id=int_chat_id, text=chunk)
-        add_to_conversation("model", final_text, database.get_active_conversation_id())
+        add_to_conversation("model", final_text, database.get_active_conversation_id(), tool_log="\n".join(tool_entries))
 
 
 async def _post_init(application: Any) -> None:

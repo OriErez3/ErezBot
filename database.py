@@ -57,7 +57,7 @@ try:
 except sqlite3.OperationalError:
     pass  #column already exists
 try:
-    cursor.execute("ALTER TABLE conversation ADD COLUMN is_tool_log INTEGER DEFAULT 0")
+    cursor.execute("ALTER TABLE conversation ADD COLUMN tool_log TEXT DEFAULT NULL")
 except sqlite3.OperationalError:
     pass  #column already exists
 cursor.execute("INSERT OR IGNORE INTO conversations (id, title) VALUES (1, 'Conversation 1')")
@@ -68,18 +68,18 @@ def clear_conversation(conversation_id: int):
         cursor.execute("DELETE FROM conversation WHERE conversation_id = ?", (conversation_id,))
         conn.commit()
 
-def add_to_conversation(role: str, message: str, conversation_id: int, is_tool_log: int = 0):
+def add_to_conversation(role: str, message: str, conversation_id: int, tool_log: str = ""):
     with _lock:
         cursor.execute('''
-            INSERT INTO conversation (role, message, conversation_id, is_tool_log) VALUES (?, ?, ?, ?)
-        ''', (role, message, conversation_id, is_tool_log))
+            INSERT INTO conversation (role, message, conversation_id, tool_log) VALUES (?, ?, ?, ?)
+        ''', (role, message, conversation_id, tool_log or None))
         conn.commit()
 
 def read_conversation(limit: int, conversation_id: int):
     with _lock:
         cursor.execute('''
             SELECT role, message FROM conversation
-            WHERE conversation_id = ? AND is_tool_log = 0
+            WHERE conversation_id = ?
             ORDER BY id DESC LIMIT ?
         ''', (conversation_id, limit))
         rows = cursor.fetchall()
@@ -190,8 +190,8 @@ def rename_conversation(conversation_id: int, title: str) -> None:
 def get_tool_logs(conversation_id: int, limit: int = 30) -> list[str]:
     with _lock:
         cursor.execute('''
-            SELECT message FROM conversation
-            WHERE conversation_id = ? AND is_tool_log = 1
+            SELECT tool_log FROM conversation
+            WHERE conversation_id = ? AND role = 'model' AND tool_log IS NOT NULL
             ORDER BY id DESC LIMIT ?
         ''', (conversation_id, limit))
         rows = cursor.fetchall()
