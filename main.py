@@ -88,7 +88,7 @@ async def start(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if update.message is None:
         return
     await update.message.reply_text("Hello! I'm your Google AI assistant.")
-def build_system_instruction(memory: str, browser_url: str, now: str, persist_mode: bool = False) -> str:
+def build_system_instruction(memory: str, browser_url: str, now: str, persist_mode: bool = False, tool_log: str = "") -> str:
     cwd = os.getcwd()
     instruction = f"""You are a personal AI assistant. Be helpful and concise.
 
@@ -125,6 +125,8 @@ Tool rules:
 - If the user changes topic or asks you to abandon the current task, fully switch focus to their new request and disregard unrelated state or results from the abandoned task"""
     if persist_mode:
         instruction += "\n- PERSISTENT MODE IS ON: do not give up, ask the user for help, or stop early. Keep trying different approaches until the task is fully complete. Only stop if you hit an unrecoverable API error."
+    if tool_log:
+        instruction += f"\n\nRecent tool calls in this conversation:\n{tool_log}"
     return instruction
 #Function to handle messages. Used the most often.
 
@@ -286,7 +288,7 @@ async def _keep_typing(bot: Any, chat_id: int, stop: asyncio.Event) -> None:
         except asyncio.TimeoutError:
             pass
 
-async def _run_tool_loop(chat: Any, response: Any, persist_mode: bool = False, status_callback: Any = None) -> tuple[Any, bool]:
+async def _run_tool_loop(chat: Any, response: Any, persist_mode: bool = False, status_callback: Any = None, conversation_id: int = 0) -> tuple[Any, bool]:
     """Repeatedly executes tool calls requested by the model until it stops calling tools,
     a duplicate call is detected, or the iteration cap is exceeded. Returns the final
     response and whether the loop gave up early.
@@ -332,6 +334,10 @@ async def _run_tool_loop(chat: Any, response: Any, persist_mode: bool = False, s
                     except Exception:
                         pass
                 result = await _execute_tool(tool_name, func.args)
+                if conversation_id:
+                    args_summary = str(dict(func.args))[:150]
+                    result_text = result[1] if isinstance(result, tuple) else str(result)
+                    database.log_tool_call(conversation_id, tool_name, args_summary, result_text[:200])
             parts.extend(_tool_result_parts(func, tool_name, result))
         response = await chat.send_message(parts)
         _prune_old_screenshots(chat)
@@ -361,18 +367,21 @@ async def _generate_response(prompt: str, persist_mode: bool = False, status_cal
     tool loop, and returns (final_text, give_up). Does not touch the conversation history table -
     callers decide what (if anything) to record."""
     memory = read_memory() #Reads the bot's memory. This memory stores important information only.
-    conversation = read_conversation(30, database.get_active_conversation_id()) #Reads the recent conversation history to provide context for the AI's response
+    conversation_id = database.get_active_conversation_id()
+    conversation = read_conversation(30, conversation_id) #Reads the recent conversation history to provide context for the AI's response
     contents=[types.Content(role=msg["role"], parts=[types.Part(text=msg["parts"][0])]) for msg in conversation] #Converts the conversation history into the correct format for Gemini API
     browser_url = t.browser_current_url() #Grounds the model in the browser's actual current page, regardless of what past conversation text says
     now = datetime.now().astimezone().isoformat() #Grounds the model in the current date/time for resolving relative dates (e.g. calendar events)
+    logs = database.get_tool_logs(conversation_id)
+    tool_log = "\n".join(f"- {e['tool']}({e['args']}) → {e['result']}" for e in logs)
     chat = client.aio.chats.create( #The async client - same API, but send_message can be awaited so it doesn't block the event loop
             model="gemini-3.1-flash-lite",
             history=contents, #type: ignore
             config=types.GenerateContentConfig(tools=[tools],
-                system_instruction=build_system_instruction(memory, browser_url, now, persist_mode)
+                system_instruction=build_system_instruction(memory, browser_url, now, persist_mode, tool_log)
         ),)
     response = await chat.send_message(prompt)
-    response, give_up = await _run_tool_loop(chat, response, persist_mode, status_callback) #Executes any tool calls the model requested
+    response, give_up = await _run_tool_loop(chat, response, persist_mode, status_callback, conversation_id) #Executes any tool calls the model requested
     return _finalize_reply(response, give_up), give_up
 
 def _describe_error(e: Exception) -> str:
