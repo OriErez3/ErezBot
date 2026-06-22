@@ -337,7 +337,7 @@ async def _run_tool_loop(chat: Any, response: Any, persist_mode: bool = False, s
                 if conversation_id:
                     args_summary = str(dict(func.args))[:150]
                     result_text = result[1] if isinstance(result, tuple) else str(result)
-                    database.log_tool_call(conversation_id, tool_name, args_summary, result_text[:200])
+                    add_to_conversation("tool", f"{tool_name}({args_summary}) → {result_text[:200]}", conversation_id)
             parts.extend(_tool_result_parts(func, tool_name, result))
         response = await chat.send_message(parts)
         _prune_old_screenshots(chat)
@@ -373,7 +373,7 @@ async def _generate_response(prompt: str, persist_mode: bool = False, status_cal
     browser_url = t.browser_current_url() #Grounds the model in the browser's actual current page, regardless of what past conversation text says
     now = datetime.now().astimezone().isoformat() #Grounds the model in the current date/time for resolving relative dates (e.g. calendar events)
     logs = database.get_tool_logs(conversation_id)
-    tool_log = "\n".join(f"- {e['tool']}({e['args']}) → {e['result']}" for e in logs)
+    tool_log = "\n".join(f"- {entry}" for entry in logs)
     chat = client.aio.chats.create( #The async client - same API, but send_message can be awaited so it doesn't block the event loop
             model="gemini-3.1-flash-lite",
             history=contents, #type: ignore
