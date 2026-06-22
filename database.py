@@ -57,11 +57,22 @@ try:
 except sqlite3.OperationalError:
     pass  #column already exists
 cursor.execute("INSERT OR IGNORE INTO conversations (id, title) VALUES (1, 'Conversation 1')")
+cursor.execute('''
+    CREATE TABLE IF NOT EXISTS tool_logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        conversation_id INTEGER DEFAULT 1,
+        tool_name TEXT,
+        args_summary TEXT,
+        result_summary TEXT,
+        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+''')
 conn.commit()
 
 def clear_conversation(conversation_id: int):
     with _lock:
         cursor.execute("DELETE FROM conversation WHERE conversation_id = ?", (conversation_id,))
+        cursor.execute("DELETE FROM tool_logs WHERE conversation_id = ?", (conversation_id,))
         conn.commit()
 
 def add_to_conversation(role: str, message: str, conversation_id: int):
@@ -180,3 +191,20 @@ def rename_conversation(conversation_id: int, title: str) -> None:
     with _lock:
         cursor.execute("UPDATE conversations SET title = ? WHERE id = ?", (title, conversation_id))
         conn.commit()
+
+def log_tool_call(conversation_id: int, tool_name: str, args_summary: str, result_summary: str) -> None:
+    with _lock:
+        cursor.execute('''
+            INSERT INTO tool_logs (conversation_id, tool_name, args_summary, result_summary)
+            VALUES (?, ?, ?, ?)
+        ''', (conversation_id, tool_name, args_summary, result_summary))
+        conn.commit()
+
+def get_tool_logs(conversation_id: int, limit: int = 30) -> list[dict]:
+    with _lock:
+        cursor.execute('''
+            SELECT tool_name, args_summary, result_summary FROM tool_logs
+            WHERE conversation_id = ? ORDER BY id DESC LIMIT ?
+        ''', (conversation_id, limit))
+        rows = cursor.fetchall()
+    return [{"tool": r[0], "args": r[1], "result": r[2]} for r in reversed(rows)]
