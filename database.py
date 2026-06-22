@@ -56,6 +56,10 @@ try:
     cursor.execute("ALTER TABLE conversation ADD COLUMN conversation_id INTEGER DEFAULT 1")
 except sqlite3.OperationalError:
     pass  #column already exists
+try:
+    cursor.execute("ALTER TABLE conversation ADD COLUMN is_tool_log INTEGER DEFAULT 0")
+except sqlite3.OperationalError:
+    pass  #column already exists
 cursor.execute("INSERT OR IGNORE INTO conversations (id, title) VALUES (1, 'Conversation 1')")
 conn.commit()
 
@@ -64,18 +68,18 @@ def clear_conversation(conversation_id: int):
         cursor.execute("DELETE FROM conversation WHERE conversation_id = ?", (conversation_id,))
         conn.commit()
 
-def add_to_conversation(role: str, message: str, conversation_id: int):
+def add_to_conversation(role: str, message: str, conversation_id: int, is_tool_log: int = 0):
     with _lock:
         cursor.execute('''
-            INSERT INTO conversation (role, message, conversation_id) VALUES (?, ?, ?)
-        ''', (role, message, conversation_id))
+            INSERT INTO conversation (role, message, conversation_id, is_tool_log) VALUES (?, ?, ?, ?)
+        ''', (role, message, conversation_id, is_tool_log))
         conn.commit()
 
 def read_conversation(limit: int, conversation_id: int):
     with _lock:
         cursor.execute('''
             SELECT role, message FROM conversation
-            WHERE conversation_id = ? AND role IN ('user', 'model')
+            WHERE conversation_id = ? AND is_tool_log = 0
             ORDER BY id DESC LIMIT ?
         ''', (conversation_id, limit))
         rows = cursor.fetchall()
@@ -187,7 +191,7 @@ def get_tool_logs(conversation_id: int, limit: int = 30) -> list[str]:
     with _lock:
         cursor.execute('''
             SELECT message FROM conversation
-            WHERE conversation_id = ? AND role = 'tool'
+            WHERE conversation_id = ? AND is_tool_log = 1
             ORDER BY id DESC LIMIT ?
         ''', (conversation_id, limit))
         rows = cursor.fetchall()

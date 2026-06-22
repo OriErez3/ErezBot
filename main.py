@@ -337,7 +337,7 @@ async def _run_tool_loop(chat: Any, response: Any, persist_mode: bool = False, s
                 if conversation_id:
                     args_summary = str(dict(func.args))[:150]
                     result_text = result[1] if isinstance(result, tuple) else str(result)
-                    add_to_conversation("tool", f"{tool_name}({args_summary}) → {result_text[:200]}", conversation_id)
+                    add_to_conversation("tool", f"{tool_name}({args_summary}) → {result_text[:200]}", conversation_id, is_tool_log=1)
             parts.extend(_tool_result_parts(func, tool_name, result))
         response = await chat.send_message(parts)
         _prune_old_screenshots(chat)
