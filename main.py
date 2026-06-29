@@ -141,6 +141,15 @@ PERSIST_MAX_TOOL_ITERATIONS = 100
 TELEGRAM_MAX_MESSAGE_CHARS = 4000 #Telegram rejects messages over 4096 chars - leave headroom
 KEEP_RECENT_SCREENSHOTS = 2
 PERSIST_MODE = False
+#Tools that change the outside world irreversibly enough to warrant a confirmation prompt
+#before they run. write_file is intentionally excluded to avoid confirmation fatigue during
+#normal multi-file work - writes are usually recoverable.
+RISKY_TOOLS = {"run_shell", "run_background", "gmail_send_email", "move_file"}
+CONFIRM_TIMEOUT_SECONDS = 120 #How long to wait for a yes/no before defaulting to deny
+_APPROVE_WORDS = {"yes", "y", "approve", "confirm", "ok", "sure"}
+#Maps a chat_id to a Future that the tool loop is awaiting; resolved by the next message
+#that chat sends (intercepted at the top of respond()). One pending confirmation per chat.
+_pending_confirmations: dict[int, asyncio.Future] = {}
 CHECKIN_INTERVAL_MINUTES = 60
 CHECKIN_PROMPT = (
     "[Automated periodic check-in] Use gmail_list_messages with query 'is:unread' to check for "
@@ -288,7 +297,29 @@ async def _keep_typing(bot: Any, chat_id: int, stop: asyncio.Event) -> None:
         except asyncio.TimeoutError:
             pass
 
-async def _run_tool_loop(chat: Any, response: Any, persist_mode: bool = False, status_callback: Any = None, conversation_id: int = 0) -> tuple[Any, bool, list[str]]:
+def _make_confirm_callback(bot: Any, chat_id: int):
+    """Builds an async callback the tool loop can await before running a risky tool. It
+    messages the owner, then blocks on a Future that respond() resolves with the owner's
+    next message. Times out to a denial so an unattended risky call is cancelled, not run."""
+    async def confirm(description: str) -> bool:
+        loop = asyncio.get_running_loop()
+        fut = loop.create_future()
+        _pending_confirmations[chat_id] = fut
+        try:
+            await bot.send_message(
+                chat_id=chat_id,
+                text=f"⚠️ I want to run:\n{description}\n\nReply 'yes' to approve, anything else to cancel.",
+            )
+            answer = await asyncio.wait_for(fut, timeout=CONFIRM_TIMEOUT_SECONDS)
+        except asyncio.TimeoutError:
+            await bot.send_message(chat_id=chat_id, text="No response - action cancelled.")
+            return False
+        finally:
+            _pending_confirmations.pop(chat_id, None)
+        return answer.strip().lower() in _APPROVE_WORDS
+    return confirm
+
+async def _run_tool_loop(chat: Any, response: Any, persist_mode: bool = False, status_callback: Any = None, conversation_id: int = 0, confirm_callback: Any = None) -> tuple[Any, bool, list[str]]:
     """Repeatedly executes tool calls requested by the model until it stops calling tools,
     a duplicate call is detected, or the iteration cap is exceeded. Returns the final
     response, whether the loop gave up early, and a compact log of every tool call made."""
@@ -325,6 +356,13 @@ async def _run_tool_loop(chat: Any, response: Any, persist_mode: bool = False, s
                     stop_executing = True
             else:
                 seen_calls.add(call_key)
+                if confirm_callback and tool_name in RISKY_TOOLS:
+                    approved = await confirm_callback(f"{tool_name}({str(dict(func.args))[:200]})")
+                    if not approved:
+                        result = "User declined this action. Do not retry it; ask what they'd like instead."
+                        tool_entries.append(f"{tool_name}(...) → DECLINED by user")
+                        parts.extend(_tool_result_parts(func, tool_name, result))
+                        continue
                 if status_callback:
                     try:
                         await status_callback(_TOOL_STATUS.get(tool_name, f"Using {tool_name}..."))
@@ -358,7 +396,7 @@ def _finalize_reply(response: Any, give_up: bool) -> str:
         return "Sorry, I couldn't come up with a response there. Could you try rephrasing?"
     return final_text
 
-async def _generate_response(prompt: str, persist_mode: bool = False, status_callback: Any = None) -> tuple[str, bool, list[str]]:
+async def _generate_response(prompt: str, persist_mode: bool = False, status_callback: Any = None, confirm_callback: Any = None) -> tuple[str, bool, list[str]]:
     """Builds a chat from the stored conversation history, sends `prompt` to the model, runs the
     tool loop, and returns (final_text, give_up). Does not touch the conversation history table -
     callers decide what (if anything) to record."""
@@ -377,7 +415,7 @@ async def _generate_response(prompt: str, persist_mode: bool = False, status_cal
                 system_instruction=build_system_instruction(memory, browser_url, now, persist_mode, tool_log)
         ),)
     response = await chat.send_message(prompt)
-    response, give_up, tool_entries = await _run_tool_loop(chat, response, persist_mode, status_callback, conversation_id) #Executes any tool calls the model requested
+    response, give_up, tool_entries = await _run_tool_loop(chat, response, persist_mode, status_callback, conversation_id, confirm_callback) #Executes any tool calls the model requested
     return _finalize_reply(response, give_up), give_up, tool_entries
 
 def _describe_error(e: Exception) -> str:
