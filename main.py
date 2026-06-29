@@ -440,6 +440,12 @@ async def respond(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE) -
     if update.message is None or update.message.text is None or update.effective_chat is None:
         return
     int_chat_id = update.effective_chat.id
+    #If the tool loop is waiting on a confirmation for this chat, this message IS the answer -
+    #hand it to the waiting Future and stop here instead of starting a new generation.
+    pending = _pending_confirmations.get(int_chat_id)
+    if pending is not None and not pending.done():
+        pending.set_result(update.message.text)
+        return
     status_msg = await context.bot.send_message(chat_id=int_chat_id, text="Thinking...")
     stop_typing = asyncio.Event()
     typing_task = asyncio.create_task(_keep_typing(context.bot, int_chat_id, stop_typing))
@@ -450,6 +456,8 @@ async def respond(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE) -
         except Exception:
             pass
 
+    confirm = _make_confirm_callback(context.bot, int_chat_id)
+
     try:
         user_message = update.message.text
         chat_id = str(int_chat_id) #Captures where to send proactive/unprompted messages later
@@ -457,7 +465,7 @@ async def respond(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE) -
             database.set_setting("chat_id", chat_id)
         conversation_id = database.get_active_conversation_id()
         add_to_conversation("user", user_message, conversation_id) #Saves the user's message to the conversation history in the database
-        final_text, _, tool_entries = await _generate_response(user_message, PERSIST_MODE, on_status)
+        final_text, _, tool_entries = await _generate_response(user_message, PERSIST_MODE, on_status, confirm)
         add_to_conversation("model", final_text, conversation_id, tool_log="\n".join(tool_entries)) #Saves the AI's response to the conversation history in the database
         for chunk in _chunk_message(final_text): #Sends the AI's response back to the user on Telegram
             await update.message.reply_text(chunk)
@@ -544,8 +552,9 @@ async def proactive_check(context: ContextTypes.DEFAULT_TYPE) -> None:
     status_msg = await context.bot.send_message(chat_id=int_chat_id, text="Checking in...")
     stop_typing = asyncio.Event()
     typing_task = asyncio.create_task(_keep_typing(context.bot, int_chat_id, stop_typing))
+    confirm = _make_confirm_callback(context.bot, int_chat_id)
     try:
-        final_text, give_up, tool_entries = await _generate_response(CHECKIN_PROMPT)
+        final_text, give_up, tool_entries = await _generate_response(CHECKIN_PROMPT, confirm_callback=confirm)
     except Exception:
         logger.exception("Proactive check-in failed")
         stop_typing.set()
@@ -581,8 +590,9 @@ async def check_scheduled_tasks(context: ContextTypes.DEFAULT_TYPE) -> None:
         status_msg = await context.bot.send_message(chat_id=int_chat_id, text="Running scheduled task...")
         stop_typing = asyncio.Event()
         typing_task = asyncio.create_task(_keep_typing(context.bot, int_chat_id, stop_typing))
+        confirm = _make_confirm_callback(context.bot, int_chat_id)
         try:
-            final_text, _, tool_entries = await _generate_response(SCHEDULED_TASK_PROMPT.format(task=task["task"]))
+            final_text, _, tool_entries = await _generate_response(SCHEDULED_TASK_PROMPT.format(task=task["task"]), confirm_callback=confirm)
         except Exception:
             logger.exception("Scheduled task failed")
             final_text = f"I tried to run a scheduled task but hit an error: {task['task']}"
@@ -617,7 +627,9 @@ def main() -> None:
         logger.warning("Re-queued %d scheduled task(s) interrupted by a previous shutdown", requeued)
     #Only respond to the owner - the bot has shell/email access, so ignore everyone else
     user_filter = filters.User(user_id=ALLOWED_USER_ID)
-    application = ApplicationBuilder().token(telegram_key).post_init(_post_init).build() # type: ignore
+    #concurrent_updates so a confirmation reply is processed while the tool loop awaits it -
+    #the default sequential mode would deadlock (the awaiting handler blocks the next update)
+    application = ApplicationBuilder().token(telegram_key).post_init(_post_init).concurrent_updates(True).build() # type: ignore
     application.add_handler(CommandHandler("start", start, filters=user_filter))
     application.add_handler(CommandHandler("clear", clear, filters=user_filter))
     application.add_handler(CommandHandler("persist", toggle_persist, filters=user_filter))
