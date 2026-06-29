@@ -1,4 +1,5 @@
 import logging
+import re
 import subprocess
 import threading
 from collections import deque
@@ -31,6 +32,26 @@ tav_client = TavilyClient(tav_key)
 
 SHELL_TIMEOUT_SECONDS = 60
 
+#Hard floor: truly unrecoverable commands that must never run, even if the user approves
+#them at the confirmation prompt. This is a backstop, not the primary defense - the
+#human-confirmation step in the tool loop catches everything else.
+_BLOCKED_PATTERNS = [
+    r"\bformat\b\s+[a-z]:",       # format C:
+    r"\bdiskpart\b",
+    r"\bmkfs\b",                  # unix filesystem wipe
+    r"rm\s+-rf?\s+/(?:\s|$)",     # rm -rf / (root)
+    r"\bshutdown\b",
+    r"\brestart\b",
+    r"reg\s+delete\s+hk",         # registry hive deletion
+    r":\(\)\s*\{\s*:\s*\|",       # fork bomb
+]
+
+def _is_blocked(command: str) -> Optional[str]:
+    for pat in _BLOCKED_PATTERNS:
+        if re.search(pat, command, re.IGNORECASE):
+            return f"Blocked: '{command}' matches a prohibited pattern and will not be run."
+    return None
+
 def run_shell(command: str) -> str:
     """Runs a shell command on the user's computer and returns the output. Use this to
     interact with the file system, run scripts, or execute system commands.
@@ -38,6 +59,9 @@ def run_shell(command: str) -> str:
     Args:
         command: The shell command to run.
     """
+    blocked = _is_blocked(command)
+    if blocked:
+        return blocked
     try:
         result = subprocess.run(
             command,
@@ -75,6 +99,9 @@ def run_background(command: str, working_directory: str = "") -> str:
         command: The shell command to run.
         working_directory: Absolute path to run the command from. Defaults to the bot working directory if omitted.
     """
+    blocked = _is_blocked(command)
+    if blocked:
+        return blocked
     global _next_bg_id
     try:
         proc = subprocess.Popen(
