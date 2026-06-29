@@ -315,9 +315,21 @@ def download_file(url: str, destination_path: str) -> str:
         if parent:
             os.makedirs(parent, exist_ok=True)
         with urllib.request.urlopen(req, timeout=DOWNLOAD_TIMEOUT_SECONDS) as response:
+            content_type = response.headers.get_content_type()
             with open(destination_path, "wb") as f:
                 shutil.copyfileobj(response, f)  # streams in chunks, no full-file buffering
         size = os.path.getsize(destination_path)
+        # A real file download shouldn't come back as an HTML page. If it does, the URL was
+        # almost certainly a download *page*, not the direct file - don't leave the misleading
+        # file on disk (that's how a 215-byte "server.jar" error page slips through).
+        if content_type == "text/html":
+            try:
+                os.remove(destination_path)
+            except OSError:
+                pass
+            return ("Error: the URL returned an HTML web page (Content-Type: text/html), not a file - "
+                    "it's probably a download page, not a direct link. Use fetch_url to read the page "
+                    "and find the direct file URL, then download that. Nothing was saved.")
         return f"Downloaded {size} bytes to {destination_path}"
     except Exception as e:
         return f"Error: {e}"
