@@ -141,6 +141,9 @@ PERSIST_MAX_TOOL_ITERATIONS = 100
 TELEGRAM_MAX_MESSAGE_CHARS = 4000 #Telegram rejects messages over 4096 chars - leave headroom
 KEEP_RECENT_SCREENSHOTS = 2
 PERSIST_MODE = False
+#When True, risky tools run without a confirmation prompt. The blocklist (truly unrecoverable
+#commands) is still enforced regardless - bypass only skips the "are you sure?" step.
+BYPASS_CONFIRM = False
 #Tools that change the outside world irreversibly enough to warrant a confirmation prompt
 #before they run. write_file is intentionally excluded to avoid confirmation fatigue during
 #normal multi-file work - writes are usually recoverable.
@@ -356,7 +359,7 @@ async def _run_tool_loop(chat: Any, response: Any, persist_mode: bool = False, s
                     stop_executing = True
             else:
                 seen_calls.add(call_key)
-                if confirm_callback and tool_name in RISKY_TOOLS:
+                if confirm_callback and tool_name in RISKY_TOOLS and not BYPASS_CONFIRM:
                     approved = await confirm_callback(f"{tool_name}({str(dict(func.args))[:200]})")
                     if not approved:
                         result = "User declined this action. Do not retry it; ask what they'd like instead."
@@ -501,6 +504,20 @@ async def toggle_persist(update: telegram.Update, context: ContextTypes.DEFAULT_
         status = "OFF."
     await update.message.reply_text(f"Persistent mode is now {status}")
 
+async def toggle_bypass(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message is None:
+        return
+    global BYPASS_CONFIRM
+    BYPASS_CONFIRM = not BYPASS_CONFIRM
+    if BYPASS_CONFIRM:
+        status = ("🚨 ON - I will run shell commands, send emails, and move files WITHOUT asking "
+                  "you first. This is dangerous; only leave it on if you know what you're doing. "
+                  "(Truly destructive commands like format/shutdown are still always blocked.) "
+                  "Send /bypass again to turn it back off.")
+    else:
+        status = "OFF - I'll ask before risky actions again."
+    await update.message.reply_text(f"Confirmation bypass is now {status}")
+
 async def new_conversation(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.message is None:
         return
@@ -615,6 +632,7 @@ async def _post_init(application: Any) -> None:
         telegram.BotCommand("start", "Greet the bot"),
         telegram.BotCommand("clear", "Clear the active conversation's history"),
         telegram.BotCommand("persist", "Toggle persistent mode (don't give up until the task is done)"),
+        telegram.BotCommand("bypass", "DANGER: toggle skipping the confirmation prompt for risky actions"),
         telegram.BotCommand("new", "Start a new conversation"),
         telegram.BotCommand("list", "List all conversations"),
         telegram.BotCommand("switch", "Switch to a conversation by number"),
@@ -633,6 +651,7 @@ def main() -> None:
     application.add_handler(CommandHandler("start", start, filters=user_filter))
     application.add_handler(CommandHandler("clear", clear, filters=user_filter))
     application.add_handler(CommandHandler("persist", toggle_persist, filters=user_filter))
+    application.add_handler(CommandHandler("bypass", toggle_bypass, filters=user_filter))
     application.add_handler(CommandHandler("new", new_conversation, filters=user_filter))
     application.add_handler(CommandHandler("list", list_conversations_cmd, filters=user_filter))
     application.add_handler(CommandHandler("switch", switch_conversation, filters=user_filter))
