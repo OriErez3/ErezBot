@@ -11,6 +11,7 @@ from database import add_scheduled_task, get_setting
 import os
 import shutil
 import time
+import urllib.request
 from dotenv import load_dotenv
 from tavily import TavilyClient
 from playwright.async_api import (
@@ -284,6 +285,57 @@ def write_file(path: str, content: str, binary: bool = False) -> str:
             with open(path, "w", encoding="utf-8") as f:
                 f.write(content)
         return "Successfully written!"
+    except Exception as e:
+        return f"Error: {e}"
+
+DOWNLOAD_TIMEOUT_SECONDS = 120
+
+def download_file(url: str, destination_path: str) -> str:
+    """Downloads a file from a URL directly to disk, without opening a browser. Use this for
+    direct download links (installers, server jars, datasets, etc.). Streams to disk so large
+    files don't exhaust memory.
+
+    Args:
+        url: The direct URL to download from (must start with http:// or https://).
+        destination_path: Absolute path to save the file to, including the filename.
+    """
+    if not url.lower().startswith(("http://", "https://")):
+        return "Error: url must start with http:// or https://"
+    try:
+        # A browser-like User-Agent; some hosts reject the default urllib agent
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        parent = os.path.dirname(destination_path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        with urllib.request.urlopen(req, timeout=DOWNLOAD_TIMEOUT_SECONDS) as response:
+            with open(destination_path, "wb") as f:
+                shutil.copyfileobj(response, f)  # streams in chunks, no full-file buffering
+        size = os.path.getsize(destination_path)
+        return f"Downloaded {size} bytes to {destination_path}"
+    except Exception as e:
+        return f"Error: {e}"
+
+FETCH_URL_MAX_CHARS = 15000
+
+def fetch_url(url: str) -> str:
+    """Fetches the raw text/HTML of a web page without opening a browser. Use this to read a
+    page's source and find links (e.g. the direct download URL behind a button) before calling
+    download_file. Output is truncated to avoid flooding context; for JS-rendered pages that
+    return little useful HTML, fall back to the browser tools.
+
+    Args:
+        url: The page URL to fetch (must start with http:// or https://).
+    """
+    if not url.lower().startswith(("http://", "https://")):
+        return "Error: url must start with http:// or https://"
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=DOWNLOAD_TIMEOUT_SECONDS) as response:
+            raw = response.read(FETCH_URL_MAX_CHARS * 4)  # bytes; decoded text is usually smaller
+        text = raw.decode("utf-8", errors="replace")
+        if len(text) > FETCH_URL_MAX_CHARS:
+            return text[:FETCH_URL_MAX_CHARS] + "\n... (truncated)"
+        return text
     except Exception as e:
         return f"Error: {e}"
 

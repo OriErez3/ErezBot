@@ -45,6 +45,8 @@ tool_dict = {
     "list_directory": t.list_directory,
     "read_file": t.read_file,
     "write_file": t.write_file,
+    "download_file": t.download_file,
+    "fetch_url": t.fetch_url,
     "save_memory": t.save_memory,
     "delete_memory": t.delete_memory,
     "read_memory": t.read_memory,
