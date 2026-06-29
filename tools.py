@@ -77,9 +77,10 @@ def run_shell(command: str) -> str:
     commands that complete on their own (e.g. `pip install ...`, `npm run build`, a one-off
     `java -jar installer.jar` that unpacks and exits) - things no other tool can do.
 
-    Do NOT use it to start a server or any process that runs indefinitely (e.g. launching a
-    Minecraft/web server) - this blocks until a timeout and then kills the process. Use
-    run_background for those: it starts the process without blocking and lets you read its output.
+    Prefer run_background to start a server or any process that runs indefinitely (e.g. launching
+    a Minecraft/web server) - it starts the process without blocking and lets you read its output.
+    (If you do use run_shell for one, it won't hang forever: after a timeout it's moved to the
+    background automatically and you get a process id back - but run_background is cleaner.)
 
     Do NOT use it for file operations or downloads. Use the dedicated tools instead:
     list_directory (not `dir`/`ls`), read_file (not `type`/`cat`), write_file (not `echo > file`),
@@ -96,25 +97,41 @@ def run_shell(command: str) -> str:
     redirect = _download_command_redirect(command)
     if redirect:
         return redirect
+    global _next_bg_id
     try:
-        result = subprocess.run(
+        proc = subprocess.Popen(
             command,
             shell=True,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
             text=True,
             encoding="utf-8",
             errors="replace",  # replaces undecodable characters instead of crashing
-            timeout=SHELL_TIMEOUT_SECONDS  # a hung command must not freeze the bot forever
         )
-        return result.stdout + result.stderr
-    except subprocess.TimeoutExpired:
-        return (f"Error: command timed out after {SHELL_TIMEOUT_SECONDS} seconds and was killed. "
-                "If this is a long-running process (a server, web app, or watcher that doesn't exit "
-                "on its own), use the run_background tool instead - it starts the process without "
-                "blocking and lets you read its output. If it was waiting for input, try a "
-                "non-interactive variant.")
     except Exception as e:
         return f"Error: {e}"
+    buf: deque = deque(maxlen=2000)
+    drain = threading.Thread(target=_drain_output, args=(proc, buf), daemon=True)
+    drain.start()
+    try:
+        proc.wait(timeout=SHELL_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        #Still running at the timeout - it's a long-running process (a server, etc.). Don't kill
+        #it; hand it to the background registry so it keeps running and the caller gets a handle.
+        #This way using run_shell for a server isn't fatal - it transparently becomes a background
+        #process instead of being killed.
+        with _bg_lock:
+            proc_id = _next_bg_id
+            _next_bg_id += 1
+            _bg_processes[proc_id] = {"process": proc, "buffer": buf, "command": command}
+        lines = "\n".join(list(buf)) or "(no output yet)"
+        return (f"This command is still running after {SHELL_TIMEOUT_SECONDS}s, so it's a long-running "
+                f"process (e.g. a server). I've moved it to the background as process {proc_id} - it is "
+                f"still running. Use read_process_output({proc_id}) to check on it or stop_process({proc_id}) "
+                f"to stop it.\nOutput so far:\n{lines}")
+    drain.join(timeout=1)  # let the drain thread finish reading any remaining buffered output
+    output = "\n".join(list(buf))
+    return output if output else "(command finished with no output)"
 
 _bg_processes: dict[int, dict] = {}
 _bg_lock = threading.Lock()
