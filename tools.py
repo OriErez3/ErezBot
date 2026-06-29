@@ -54,8 +54,15 @@ def _is_blocked(command: str) -> Optional[str]:
     return None
 
 def run_shell(command: str) -> str:
-    """Runs a shell command on the user's computer and returns the output. Use this to
-    interact with the file system, run scripts, or execute system commands.
+    """Runs a shell command and returns its output. Use this ONLY for running programs,
+    scripts, and installers (e.g. `java -jar server.jar`, `pip install ...`, `npm run ...`) -
+    things no other tool can do.
+
+    Do NOT use it for file operations or downloads. Use the dedicated tools instead:
+    list_directory (not `dir`/`ls`), read_file (not `type`/`cat`), write_file (not `echo > file`),
+    move_file, find_file, and download_file (not `curl`/`wget`). They are more reliable - e.g.
+    `echo eula=true > eula.txt` writes a stray trailing space that silently breaks the file
+    (Minecraft then rejects the EULA), whereas write_file writes exactly the content you give it.
 
     Args:
         command: The shell command to run.

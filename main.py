@@ -108,8 +108,10 @@ Browser state:
 
 Tool rules:
 - Use save_memory for important user facts, delete_memory when outdated, read_memory to recall facts
-- Use write_file, read_file, list_directory for file operations. Only use run_shell when explicitly asked
+- For file operations ALWAYS use the dedicated tools: list_directory to see a folder's contents, read_file to read, write_file to write, move_file to move, find_file to locate, download_file to download. Do NOT use run_shell for these - never run `dir`, `ls`, `type`, `cat`, `copy`, `move`, `del`, `mkdir` and the like. run_shell is a last resort for things no dedicated tool covers (running a program, installing packages); it also interrupts the user with a confirmation prompt every time, so reaching for it when a dedicated tool exists is slow and annoying for them
 - File paths: always use absolute paths (e.g. C:\\Users\\orier\\Desktop\\project). Never use relative paths or write files into the bot working directory unless the user explicitly asks to
+- Working directory: when a task lives in a specific folder (setting up a server, building a project, etc.), pick that folder's absolute path ONCE and do everything inside it. Every write_file/download_file/read_file uses paths within it, AND every command must run there too: pass working_directory=<folder> to run_background, and prefix run_shell with `cd /d <folder> &&`. If you omit this, commands run in the bot directory ({cwd}) and won't see the files you created - which is almost always a bug. Never split one task across two folders or copy the files between them.
+- Downloads: to fetch a file, prefer fetch_url (to read a page and find the direct link) then download_file (to save it) - this avoids the browser entirely. Only open the browser if you genuinely can't obtain the direct link that way.
 - Never give up on a task without actually attempting it first
 - Browser: only call browser_navigate for new URLs, never to save files
 - Browser: re-navigating to the page you're already on is now a safe no-op (it won't reload), but prefer browser_get_elements/browser_screenshot to inspect the current page instead of calling browser_navigate again
