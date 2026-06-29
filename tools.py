@@ -73,9 +73,13 @@ def _download_command_redirect(command: str) -> Optional[str]:
     return None
 
 def run_shell(command: str) -> str:
-    """Runs a shell command and returns its output. Use this ONLY for running programs,
-    scripts, and installers (e.g. `java -jar server.jar`, `pip install ...`, `npm run ...`) -
-    things no other tool can do.
+    """Runs a shell command and waits for it to finish, returning its output. Use this ONLY for
+    commands that complete on their own (e.g. `pip install ...`, `npm run build`, a one-off
+    `java -jar installer.jar` that unpacks and exits) - things no other tool can do.
+
+    Do NOT use it to start a server or any process that runs indefinitely (e.g. launching a
+    Minecraft/web server) - this blocks until a timeout and then kills the process. Use
+    run_background for those: it starts the process without blocking and lets you read its output.
 
     Do NOT use it for file operations or downloads. Use the dedicated tools instead:
     list_directory (not `dir`/`ls`), read_file (not `type`/`cat`), write_file (not `echo > file`),
@@ -104,7 +108,11 @@ def run_shell(command: str) -> str:
         )
         return result.stdout + result.stderr
     except subprocess.TimeoutExpired:
-        return f"Error: command timed out after {SHELL_TIMEOUT_SECONDS} seconds. It may have been waiting for input - try a non-interactive variant."
+        return (f"Error: command timed out after {SHELL_TIMEOUT_SECONDS} seconds and was killed. "
+                "If this is a long-running process (a server, web app, or watcher that doesn't exit "
+                "on its own), use the run_background tool instead - it starts the process without "
+                "blocking and lets you read its output. If it was waiting for input, try a "
+                "non-interactive variant.")
     except Exception as e:
         return f"Error: {e}"
 
