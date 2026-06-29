@@ -53,6 +53,25 @@ def _is_blocked(command: str) -> Optional[str]:
             return f"Blocked: '{command}' matches a prohibited pattern and will not be run."
     return None
 
+def _download_command_redirect(command: str) -> Optional[str]:
+    """Detects shell commands that download a file to disk (curl -o, wget, Invoke-WebRequest
+    -OutFile) and redirects to the download_file tool. curl/wget save error pages as if they
+    were the file (that's how a 215-byte 'server.jar' slips through); download_file errors
+    cleanly instead. A bare `curl https://api...` with no output flag is left alone - that's
+    an API call, use fetch_url for that."""
+    c = command.lower()
+    is_download = (
+        ("curl" in c and re.search(r"(^|\s)-o\b|--output|--remote-name", c)) or
+        re.search(r"(^|\s)wget\b", c) or
+        ("invoke-webrequest" in c and "outfile" in c) or
+        (re.search(r"(^|\s)iwr\b", c) and "outfile" in c)
+    )
+    if is_download:
+        return ("Use the download_file tool to download files, not a shell command. It streams to "
+                "disk and errors cleanly on failure instead of saving an error page as a corrupt "
+                "file. To read a page's contents (e.g. to find a link), use fetch_url.")
+    return None
+
 def run_shell(command: str) -> str:
     """Runs a shell command and returns its output. Use this ONLY for running programs,
     scripts, and installers (e.g. `java -jar server.jar`, `pip install ...`, `npm run ...`) -
@@ -70,6 +89,9 @@ def run_shell(command: str) -> str:
     blocked = _is_blocked(command)
     if blocked:
         return blocked
+    redirect = _download_command_redirect(command)
+    if redirect:
+        return redirect
     try:
         result = subprocess.run(
             command,
@@ -110,6 +132,9 @@ def run_background(command: str, working_directory: str = "") -> str:
     blocked = _is_blocked(command)
     if blocked:
         return blocked
+    redirect = _download_command_redirect(command)
+    if redirect:
+        return redirect
     global _next_bg_id
     try:
         proc = subprocess.Popen(
