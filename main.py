@@ -583,6 +583,27 @@ async def respond_photo(update: telegram.Update, context: ContextTypes.DEFAULT_T
     history_text = f"[photo] {caption}" if caption else "[photo]"
     media = [types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg")] #Telegram photos are always JPEG
     await _handle_user_request(update, context, user_message=user_message, history_text=history_text, media_parts=media)
+
+VOICE_MAX_BYTES = 20 * 1024 * 1024 #Telegram's bot-API download limit; larger files error anyway
+
+async def respond_voice(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handles a voice message: downloads the audio and sends it to the model directly
+    (Gemini understands speech natively - no separate transcription service). History gets
+    a '[voice message]' placeholder - the audio is only heard for this turn."""
+    if update.message is None or update.message.voice is None or update.effective_chat is None:
+        return
+    voice = update.message.voice
+    if voice.file_size and voice.file_size > VOICE_MAX_BYTES:
+        await update.message.reply_text("That voice message is too large for me to download (Telegram caps bot downloads at 20MB). Could you send a shorter one?")
+        return
+    file = await context.bot.get_file(voice.file_id)
+    audio_bytes = bytes(await file.download_as_bytearray())
+    user_message = ("The user sent a voice message (attached). Listen to it and respond to what "
+                    "they say exactly as if they had typed it - including using your tools if "
+                    "they ask you to do something.")
+    history_text = "[voice message]"
+    media = [types.Part.from_bytes(data=audio_bytes, mime_type=voice.mime_type or "audio/ogg")] #Telegram voice notes are OGG/Opus
+    await _handle_user_request(update, context, user_message=user_message, history_text=history_text, media_parts=media)
    
 
    
@@ -812,6 +833,7 @@ def main() -> None:
     )
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & user_filter, respond))
     application.add_handler(MessageHandler(filters.PHOTO & user_filter, respond_photo))
+    application.add_handler(MessageHandler(filters.VOICE & user_filter, respond_voice))
     application.run_polling(allowed_updates=telegram.Update.ALL_TYPES)
 
 if __name__ == "__main__":
