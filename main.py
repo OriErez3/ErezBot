@@ -449,10 +449,11 @@ def _finalize_reply(response: Any, give_up: bool) -> str:
         return "Sorry, I couldn't come up with a response there. Could you try rephrasing?"
     return final_text
 
-async def _generate_response(prompt: str, chat_id: int = 0, persist_mode: bool = False, status_callback: Any = None, confirm_callback: Any = None) -> tuple[str, bool, list[str]]:
+async def _generate_response(prompt: str, chat_id: int = 0, persist_mode: bool = False, status_callback: Any = None, confirm_callback: Any = None, media_parts: list | None = None) -> tuple[str, bool, list[str]]:
     """Builds a chat from the stored conversation history, sends `prompt` to the model, runs the
     tool loop, and returns (final_text, give_up). Does not touch the conversation history table -
-    callers decide what (if anything) to record."""
+    callers decide what (if anything) to record. media_parts optionally attaches images/audio
+    (as types.Part) ahead of the prompt text, for photo/voice messages."""
     _active_generations.add(chat_id)
     _cancel_requests.discard(chat_id) #a stale /cancel from an earlier task must not kill this one
     try:
@@ -470,7 +471,9 @@ async def _generate_response(prompt: str, chat_id: int = 0, persist_mode: bool =
                 config=types.GenerateContentConfig(tools=[tools],
                     system_instruction=build_system_instruction(memory, browser_url, now, persist_mode, tool_log)
             ),)
-        response = await chat.send_message(prompt)
+        #With media attached, the message is a list of Parts (media first, then the text)
+        message = media_parts + [types.Part(text=prompt)] if media_parts else prompt
+        response = await chat.send_message(message)
         response, give_up, tool_entries = await _run_tool_loop(chat, response, persist_mode, status_callback, conversation_id, confirm_callback, chat_id) #Executes any tool calls the model requested
         return _finalize_reply(response, give_up), give_up, tool_entries
     finally:
@@ -494,17 +497,14 @@ def _chunk_message(text: str) -> list:
     oversized message raises BadRequest and the user would get nothing at all."""
     return [text[i:i + TELEGRAM_MAX_MESSAGE_CHARS] for i in range(0, len(text), TELEGRAM_MAX_MESSAGE_CHARS)] or [text]
 
-async def respond(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    #Edited messages, channel posts, reactions etc. arrive with message=None - nothing to respond to
-    if update.message is None or update.message.text is None or update.effective_chat is None:
+async def _handle_user_request(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE, user_message: str, history_text: str, media_parts: list | None = None) -> None:
+    """Shared pipeline for every kind of user message (text, photo, voice): queue on the
+    per-chat lock, show status, run the generation, record history, and send the reply.
+    `user_message` is the prompt text the model sees; `history_text` is what the conversation
+    log records (media bytes aren't persisted - just a placeholder like '[photo] ...')."""
+    if update.message is None or update.effective_chat is None:
         return
     int_chat_id = update.effective_chat.id
-    #If the tool loop is waiting on a confirmation for this chat, this message IS the answer -
-    #hand it to the waiting Future and stop here instead of starting a new generation.
-    pending = _pending_confirmations.get(int_chat_id)
-    if pending is not None and not pending.done():
-        pending.set_result(update.message.text)
-        return
     lock = _get_generation_lock(int_chat_id)
     if lock.locked():
         #A task is already running - tell the user this message is queued, not lost
@@ -526,13 +526,12 @@ async def respond(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE) -
         confirm = _make_confirm_callback(context.bot, int_chat_id)
 
         try:
-            user_message = update.message.text
             chat_id = str(int_chat_id) #Captures where to send proactive/unprompted messages later
             if database.get_setting("chat_id") != chat_id:
                 database.set_setting("chat_id", chat_id)
             conversation_id = database.get_active_conversation_id()
-            add_to_conversation("user", user_message, conversation_id) #Saves the user's message to the conversation history in the database
-            final_text, _, tool_entries = await _generate_response(user_message, chat_id=int_chat_id, persist_mode=PERSIST_MODE, status_callback=on_status, confirm_callback=confirm)
+            add_to_conversation("user", history_text, conversation_id) #Saves the user's message to the conversation history in the database
+            final_text, _, tool_entries = await _generate_response(user_message, chat_id=int_chat_id, persist_mode=PERSIST_MODE, status_callback=on_status, confirm_callback=confirm, media_parts=media_parts)
             add_to_conversation("model", final_text, conversation_id, tool_log="\n".join(tool_entries)) #Saves the AI's response to the conversation history in the database
             for chunk in _chunk_message(final_text): #Sends the AI's response back to the user on Telegram
                 await update.message.reply_text(chunk)
@@ -546,6 +545,19 @@ async def respond(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE) -
                 await status_msg.delete()
             except Exception:
                 pass
+
+async def respond(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    #Edited messages, channel posts, reactions etc. arrive with message=None - nothing to respond to
+    if update.message is None or update.message.text is None or update.effective_chat is None:
+        return
+    int_chat_id = update.effective_chat.id
+    #If the tool loop is waiting on a confirmation for this chat, this message IS the answer -
+    #hand it to the waiting Future and stop here instead of starting a new generation.
+    pending = _pending_confirmations.get(int_chat_id)
+    if pending is not None and not pending.done():
+        pending.set_result(update.message.text)
+        return
+    await _handle_user_request(update, context, user_message=update.message.text, history_text=update.message.text)
    
 
    
