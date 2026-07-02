@@ -39,6 +39,21 @@ def check_python() -> None:
         sys.exit(f"Python 3.10+ is required (you're on {sys.version.split()[0]}). "
                  "Install a newer Python and re-run.")
     print(f"[ok] Python {sys.version.split()[0]}")
+    #Modern Linux/macOS Pythons (PEP 668) refuse system-wide pip installs - catch it up
+    #front with clear instructions instead of failing halfway through the install step.
+    in_venv = sys.prefix != sys.base_prefix
+    if in_venv:
+        print(f"[ok] Virtual environment: {sys.prefix}")
+    elif sys.platform != "win32":
+        venv_dir = os.path.join(BASE_DIR, ".venv")
+        sys.exit(
+            "You're using the system Python, which will refuse to install packages\n"
+            "(externally-managed-environment). Create and activate a virtual environment first:\n\n"
+            f"    python3 -m venv {venv_dir}\n"
+            f"    source {os.path.join(venv_dir, 'bin', 'activate')}\n"
+            "    python setup_bot.py\n\n"
+            "(The bot's service files and deploy script expect the venv at exactly that .venv path.)"
+        )
 
 
 def install_dependencies() -> None:
