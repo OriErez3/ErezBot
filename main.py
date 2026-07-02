@@ -94,6 +94,9 @@ async def start(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await update.message.reply_text("Hello! I'm your Google AI assistant.")
 def build_system_instruction(memory: str, browser_url: str, now: str, persist_mode: bool = False, tool_log: str = "") -> str:
     cwd = os.getcwd()
+    #`cd /d` is cmd.exe-only (switches drive too); POSIX shells just use `cd`
+    cd_example = "cd /d <folder> &&" if os_name == "Windows" else "cd <folder> &&"
+    path_example = r"C:\Users\orier\Desktop\project" if os_name == "Windows" else "/home/user/project"
     instruction = f"""You are a personal AI assistant. Be helpful and concise.
 
 System info:
@@ -111,8 +114,8 @@ Browser state:
 Tool rules:
 - Use save_memory for important user facts, delete_memory when outdated, read_memory to recall facts
 - For file operations ALWAYS use the dedicated tools: list_directory to see a folder's contents, read_file to read, write_file to write, move_file to move, find_file to locate, download_file to download. Do NOT use run_shell for these - never run `dir`, `ls`, `type`, `cat`, `copy`, `move`, `del`, `mkdir` and the like. run_shell is a last resort for things no dedicated tool covers (running a program, installing packages); it also interrupts the user with a confirmation prompt every time, so reaching for it when a dedicated tool exists is slow and annoying for them
-- File paths: always use absolute paths (e.g. C:\\Users\\orier\\Desktop\\project). Never use relative paths or write files into the bot working directory unless the user explicitly asks to
-- Working directory: when a task lives in a specific folder (setting up a server, building a project, etc.), pick that folder's absolute path ONCE and do everything inside it. Every write_file/download_file/read_file uses paths within it, AND every command must run there too: pass working_directory=<folder> to run_background, and prefix run_shell with `cd /d <folder> &&`. If you omit this, commands run in the bot directory ({cwd}) and won't see the files you created - which is almost always a bug. Never split one task across two folders or copy the files between them.
+- File paths: always use absolute paths (e.g. {path_example}). Never use relative paths or write files into the bot working directory unless the user explicitly asks to
+- Working directory: when a task lives in a specific folder (setting up a server, building a project, etc.), pick that folder's absolute path ONCE and do everything inside it. Every write_file/download_file/read_file uses paths within it, AND every command must run there too: pass working_directory=<folder> to run_background, and prefix run_shell with `{cd_example}`. If you omit this, commands run in the bot directory ({cwd}) and won't see the files you created - which is almost always a bug. Never split one task across two folders or copy the files between them.
 - Downloads: to fetch a file, prefer fetch_url (to read a page and find the direct link) then download_file (to save it) - this avoids the browser entirely. Only open the browser if you genuinely can't obtain the direct link that way.
 - If fetch_url returns a page that doesn't contain the link or data you need, the page builds it with JavaScript - do NOT guess or fabricate a download URL (you'll get 404s). Instead web_search for the site's official JSON/API or manifest endpoint, fetch_url that to get the real link, then download_file it. Only if no such API exists, open the browser to read the real link off the page.
 - Never give up on a task without actually attempting it first

@@ -54,7 +54,10 @@ ALLOWED_USER_ID=<your numeric Telegram user id>
 - **TAVILY_KEY**: sign up at [tavily.com](https://tavily.com) (free tier is fine).
 - **ALLOWED_USER_ID**: your own Telegram user id (a number, not your @username). Message [@userinfobot](https://t.me/userinfobot) to get it. This is required — the bot has shell and email access, so it must only obey you.
 
-Optionally, add `GEMINI_MODEL=<model name>` to use a different Gemini model (defaults to `gemini-3.1-flash-lite`).
+Optional extras:
+
+- `GEMINI_MODEL=<model name>` — use a different Gemini model (defaults to `gemini-3.1-flash-lite`).
+- `BROWSER_HEADLESS=true` — run the automation browser without a window. Needed on machines with no display, unless you run the bot under `xvfb-run` (preferred — some sites bot-detect headless Chromium).
 
 ### 3. Connect your Google account
 
@@ -105,6 +108,57 @@ Then message your bot on Telegram. The first message also registers your chat as
 | `test_helpers.py` | Unit tests for the command guardrails and reply helpers — run with `python -m unittest test_helpers` |
 
 Tool declarations are generated automatically from each function's signature and docstring — to add a tool, write the function and register it in `tool_dict` in `main.py`.
+
+## Deploying on a headless Linux server
+
+Code travels via git; the gitignored secrets travel via `scp`:
+
+```bash
+# on the server
+git clone <your repo url> ~/ClawBotClone
+# from your old machine
+scp .env credentials.json token.json memory.db user@server:~/ClawBotClone/
+```
+
+Copying `token.json` matters: the Google consent flow (`setup_auth`) needs a browser, which a headless server doesn't have — but a `token.json` created elsewhere works anywhere and refreshes itself. `memory.db` is optional (brings conversations, memories, and pending scheduled tasks along).
+
+```bash
+sudo apt update && sudo apt install -y python3-venv xvfb
+cd ~/ClawBotClone
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+playwright install --with-deps chromium     # --with-deps needs sudo: installs Chromium's system libraries
+sudo timedatectl set-timezone <your zone>   # the bot resolves "tomorrow at 5pm" in server-local time
+```
+
+Test it interactively first: `xvfb-run -a python main.py` (or set `BROWSER_HEADLESS=true` in `.env` and run plain `python main.py`). Then install it as a service so it starts on boot and restarts on crashes — `/etc/systemd/system/clawbot.service`:
+
+```ini
+[Unit]
+Description=ClawBot Telegram assistant
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=youruser
+WorkingDirectory=/home/youruser/ClawBotClone
+ExecStart=/usr/bin/xvfb-run -a /home/youruser/ClawBotClone/.venv/bin/python main.py
+Restart=on-failure
+RestartSec=10
+# Optional, for small servers sharing RAM with other services (e.g. a game server):
+# MemoryMax=1500M
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now clawbot
+journalctl -u clawbot -f    # live logs
+```
+
+Important: run only ONE instance per bot token. Two pollers (e.g. the old Windows machine and the server) fight over Telegram updates and both break — stop the old one before starting the new one.
 
 ## Security notes
 

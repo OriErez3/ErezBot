@@ -32,6 +32,10 @@ tav_key = os.getenv("TAVILY_KEY")
 tav_client = TavilyClient(tav_key)
 
 SHELL_TIMEOUT_SECONDS = 60
+#Set BROWSER_HEADLESS=true in .env on machines with no display (a headless server).
+#Headed (the default) is preferred where possible - some sites bot-detect headless Chromium.
+#Alternative on a server: keep this false and run the bot under `xvfb-run -a`.
+BROWSER_HEADLESS = os.getenv("BROWSER_HEADLESS", "").lower() in ("1", "true", "yes")
 
 #Hard floor: truly unrecoverable commands that must never run, even if the user approves
 #them at the confirmation prompt. This is a backstop, not the primary defense - the
@@ -553,7 +557,7 @@ class BrowserSession:
         if self._browser is None:
             self._playwright = await async_playwright().start()
             self._browser = await self._playwright.chromium.launch(
-                headless=False,
+                headless=BROWSER_HEADLESS,
                 args=["--disable-blink-features=AutomationControlled"],
             )
         if self.page is None or self.page.is_closed():
