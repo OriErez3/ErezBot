@@ -644,7 +644,9 @@ async def proactive_check(context: ContextTypes.DEFAULT_TYPE) -> None:
     if not chat_id:
         return
     int_chat_id = int(chat_id)
-    status_msg = await context.bot.send_message(chat_id=int_chat_id, text="Checking in...")
+    #Silent - this fires every hour and usually finds nothing; the notification for the
+    #deleted status message would still ping the user's phone. A real report still notifies.
+    status_msg = await context.bot.send_message(chat_id=int_chat_id, text="Checking in...", disable_notification=True)
     stop_typing = asyncio.Event()
     typing_task = asyncio.create_task(_keep_typing(context.bot, int_chat_id, stop_typing))
     confirm = _make_confirm_callback(context.bot, int_chat_id)
@@ -682,7 +684,7 @@ async def check_scheduled_tasks(context: ContextTypes.DEFAULT_TYPE) -> None:
         #survives and gets re-queued on the next startup instead of silently vanishing
         database.mark_task_running(task["id"])
         int_chat_id = int(task["chat_id"])
-        status_msg = await context.bot.send_message(chat_id=int_chat_id, text="Running scheduled task...")
+        status_msg = await context.bot.send_message(chat_id=int_chat_id, text="Running scheduled task...", disable_notification=True)
         stop_typing = asyncio.Event()
         typing_task = asyncio.create_task(_keep_typing(context.bot, int_chat_id, stop_typing))
         confirm = _make_confirm_callback(context.bot, int_chat_id)
