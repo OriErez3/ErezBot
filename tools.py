@@ -503,6 +503,11 @@ def web_search(query: str) -> str:
 def _normalize_url(url: str) -> str:
     return url.strip().rstrip('/')
 
+#One consistent, actionable message for every tool that needs a live page. Covers both
+#"never opened" and "the user closed the window" - the fix is the same either way.
+_DEAD_PAGE_MSG = ("Error: no browser page is open (it was closed or never opened). "
+                  "Use browser_navigate to open one - it will relaunch the browser if needed.")
+
 class BrowserSession:
     """Encapsulates a single Playwright browser/page and the element index cache for it."""
 
@@ -512,15 +517,49 @@ class BrowserSession:
         self.page: Optional[Page] = None
         self.elements_cache: dict[int, dict] = {}
 
+    def _page_dead(self) -> bool:
+        """True when there's no usable page - never opened, or the user closed the
+        window/tab, or the browser crashed. Dead handles aren't None, so a plain None
+        check misses all of those cases."""
+        return (
+            self._browser is None
+            or not self._browser.is_connected()
+            or self.page is None
+            or self.page.is_closed()
+        )
+
+    async def _reset(self) -> None:
+        """Drops all handles to a dead browser so _ensure_page relaunches from scratch."""
+        try:
+            if self._browser is not None:
+                await self._browser.close()
+        except Exception:
+            pass
+        try:
+            if self._playwright is not None:
+                await self._playwright.stop()
+        except Exception:
+            pass
+        self._playwright = None
+        self._browser = None
+        self.page = None
+        self.elements_cache.clear()
+
     async def _ensure_page(self) -> Page:
+        #Recover if the user closed the Chromium window (or it crashed) - without this,
+        #the stale handles make every browser tool error until the bot restarts.
+        if self._browser is not None and not self._browser.is_connected():
+            await self._reset()
         if self._browser is None:
             self._playwright = await async_playwright().start()
             self._browser = await self._playwright.chromium.launch(
                 headless=False,
                 args=["--disable-blink-features=AutomationControlled"],
             )
+        if self.page is None or self.page.is_closed():
+            #Browser alive but the tab was closed - just open a fresh one
             self.page = await self._browser.new_page(viewport={"width": 1280, "height": 720})
-        assert self.page is not None
+            self.elements_cache.clear()
         return self.page
 
     def _invalidate_elements_cache(self) -> None:
@@ -555,19 +594,19 @@ class BrowserSession:
             return f"Error: {e}"
 
     def get_current_url(self) -> str:
-        return self.page.url if self.page else "No page open"
+        return "No page open" if self._page_dead() else self.page.url  #type: ignore[union-attr]
 
     async def screenshot(self) -> str:
-        if self.page is None:
-            return "Error: No browser open. Use browser_navigate first."
+        if self._page_dead():
+            return _DEAD_PAGE_MSG
         try:
             return await self._screenshot_b64()
         except Exception as e:
             return f"Error: {e}"
 
     async def get_elements(self, screenshot: bool = False) -> Union[str, tuple[str, str]]:
-        if self.page is None:
-            return "Error: No browser open. Use browser_navigate first."
+        if self._page_dead():
+            return _DEAD_PAGE_MSG
         try:
             # Query DOM
             elements = await self.page.evaluate("""
@@ -626,8 +665,8 @@ class BrowserSession:
             return f"Error: {e}"
 
     async def click_element(self, index: int) -> str:
-        if self.page is None:
-            return "Error: No browser open."
+        if self._page_dead():
+            return _DEAD_PAGE_MSG
         try:
             el = self.elements_cache.get(index)
             logger.debug("Clicking element %s: %s", index, el)
@@ -644,8 +683,8 @@ class BrowserSession:
             return f"Error: {e}"
 
     async def click(self, x: int, y: int) -> str:
-        if self.page is None:
-            return "Error: no browser is open. Use browser_navigate to open it."
+        if self._page_dead():
+            return _DEAD_PAGE_MSG
         try:
             await self.page.mouse.click(x, y)
             self._invalidate_elements_cache()
@@ -655,8 +694,8 @@ class BrowserSession:
             return f"Error: {e}"
 
     async def type_text(self, text: str, press_enter: bool = False) -> str:
-        if self.page is None:
-            return "Error: no browser is open. Use browser_navigate to open it."
+        if self._page_dead():
+            return _DEAD_PAGE_MSG
         try:
             await self.page.keyboard.type(text)
             if press_enter:
@@ -668,8 +707,8 @@ class BrowserSession:
             return f"Error: {e}"
 
     async def scroll(self, direction: str, amount: int = 300) -> str:
-        if self.page is None:
-            return "Error: No browser open. Use browser_navigate first."
+        if self._page_dead():
+            return _DEAD_PAGE_MSG
         try:
             if direction == "down":
                 await self.page.mouse.wheel(0, amount)
@@ -682,8 +721,8 @@ class BrowserSession:
             return f"Error: {e}"
 
     async def go_back(self) -> str:
-        if self.page is None:
-            return "Error: No browser open."
+        if self._page_dead():
+            return _DEAD_PAGE_MSG
         try:
             await self.page.go_back()
             self._invalidate_elements_cache()
