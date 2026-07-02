@@ -1,0 +1,32 @@
+# Runs the unit test suite on every push and pull request. The bot refuses to even
+# import without its env vars, so dummy values are provided - tests only exercise the
+# pure helper functions and never call Telegram/Gemini/Tavily.
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+        # No `playwright install` here - the tests never launch a browser, and
+        # skipping the ~150MB Chromium download keeps CI fast.
+
+      - name: Run tests
+        env:
+          TELEGRAM_TOKEN: dummy
+          GEMINI_API_KEY: dummy
+          ALLOWED_USER_ID: "123456"
+          TAVILY_KEY: dummy
+        run: python -m unittest test_helpers -v
