@@ -81,6 +81,7 @@ Then message your bot on Telegram. The first message also registers your chat as
 | Command | What it does |
 |---|---|
 | `/start` | Greet the bot (sanity check that it's running) |
+| `/cancel` | Stop the task the bot is currently working on (it finishes the action already in progress, then stops and reports; also denies any pending confirmation prompt) |
 | `/clear` | Clear the active conversation's history |
 | `/new` | Start a new conversation |
 | `/list` | List all conversations |

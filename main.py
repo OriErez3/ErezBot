@@ -158,6 +158,11 @@ _APPROVE_WORDS = {"yes", "y", "approve", "confirm", "ok", "sure"}
 #Maps a chat_id to a Future that the tool loop is awaiting; resolved by the next message
 #that chat sends (intercepted at the top of respond()). One pending confirmation per chat.
 _pending_confirmations: dict[int, asyncio.Future] = {}
+#Chats with a generation currently in flight, and chats that asked to /cancel it. The tool
+#loop checks _cancel_requests before each tool call, so cancelling stops the task after the
+#action already in progress finishes - it can't abort a tool mid-execution.
+_active_generations: set[int] = set()
+_cancel_requests: set[int] = set()
 CHECKIN_INTERVAL_MINUTES = 60
 CHECKIN_PROMPT = (
     "[Automated periodic check-in] Use gmail_list_messages with query 'is:unread' to check for "
@@ -327,7 +332,7 @@ def _make_confirm_callback(bot: Any, chat_id: int):
         return answer.strip().lower() in _APPROVE_WORDS
     return confirm
 
-async def _run_tool_loop(chat: Any, response: Any, persist_mode: bool = False, status_callback: Any = None, conversation_id: int = 0, confirm_callback: Any = None) -> tuple[Any, bool, list[str]]:
+async def _run_tool_loop(chat: Any, response: Any, persist_mode: bool = False, status_callback: Any = None, conversation_id: int = 0, confirm_callback: Any = None, chat_id: int = 0) -> tuple[Any, bool, list[str]]:
     """Repeatedly executes tool calls requested by the model until it stops calling tools,
     a duplicate call is detected, or the iteration cap is exceeded. Returns the final
     response, whether the loop gave up early, and a compact log of every tool call made."""
@@ -351,6 +356,12 @@ async def _run_tool_loop(chat: Any, response: Any, persist_mode: bool = False, s
             iteration_count += 1
             if stop_executing:
                 result = "Skipped - stopping tool use now."
+            elif chat_id in _cancel_requests:
+                _cancel_requests.discard(chat_id)
+                result = ("The user sent /cancel - stop this task NOW. Do not call any more tools. "
+                          "Reply with a brief note on what you finished and what's left undone.")
+                give_up = True
+                stop_executing = True
             elif iteration_count > max_iterations:
                 result = "You've taken too many actions on this task. Stop here and respond to the user now, summarizing what you've done so far and what's left."
                 give_up = True
@@ -404,27 +415,33 @@ def _finalize_reply(response: Any, give_up: bool) -> str:
         return "Sorry, I couldn't come up with a response there. Could you try rephrasing?"
     return final_text
 
-async def _generate_response(prompt: str, persist_mode: bool = False, status_callback: Any = None, confirm_callback: Any = None) -> tuple[str, bool, list[str]]:
+async def _generate_response(prompt: str, chat_id: int = 0, persist_mode: bool = False, status_callback: Any = None, confirm_callback: Any = None) -> tuple[str, bool, list[str]]:
     """Builds a chat from the stored conversation history, sends `prompt` to the model, runs the
     tool loop, and returns (final_text, give_up). Does not touch the conversation history table -
     callers decide what (if anything) to record."""
-    memory = read_memory() #Reads the bot's memory. This memory stores important information only.
-    conversation_id = database.get_active_conversation_id()
-    conversation = read_conversation(30, conversation_id) #Reads the recent conversation history to provide context for the AI's response
-    contents=[types.Content(role=msg["role"], parts=[types.Part(text=msg["parts"][0])]) for msg in conversation] #Converts the conversation history into the correct format for Gemini API
-    browser_url = t.browser_current_url() #Grounds the model in the browser's actual current page, regardless of what past conversation text says
-    now = datetime.now().astimezone().isoformat() #Grounds the model in the current date/time for resolving relative dates (e.g. calendar events)
-    logs = database.get_tool_logs(conversation_id)
-    tool_log = "\n".join(f"- {entry}" for entry in logs)
-    chat = client.aio.chats.create( #The async client - same API, but send_message can be awaited so it doesn't block the event loop
-            model="gemini-3.1-flash-lite",
-            history=contents, #type: ignore
-            config=types.GenerateContentConfig(tools=[tools],
-                system_instruction=build_system_instruction(memory, browser_url, now, persist_mode, tool_log)
-        ),)
-    response = await chat.send_message(prompt)
-    response, give_up, tool_entries = await _run_tool_loop(chat, response, persist_mode, status_callback, conversation_id, confirm_callback) #Executes any tool calls the model requested
-    return _finalize_reply(response, give_up), give_up, tool_entries
+    _active_generations.add(chat_id)
+    _cancel_requests.discard(chat_id) #a stale /cancel from an earlier task must not kill this one
+    try:
+        memory = read_memory() #Reads the bot's memory. This memory stores important information only.
+        conversation_id = database.get_active_conversation_id()
+        conversation = read_conversation(30, conversation_id) #Reads the recent conversation history to provide context for the AI's response
+        contents=[types.Content(role=msg["role"], parts=[types.Part(text=msg["parts"][0])]) for msg in conversation] #Converts the conversation history into the correct format for Gemini API
+        browser_url = t.browser_current_url() #Grounds the model in the browser's actual current page, regardless of what past conversation text says
+        now = datetime.now().astimezone().isoformat() #Grounds the model in the current date/time for resolving relative dates (e.g. calendar events)
+        logs = database.get_tool_logs(conversation_id)
+        tool_log = "\n".join(f"- {entry}" for entry in logs)
+        chat = client.aio.chats.create( #The async client - same API, but send_message can be awaited so it doesn't block the event loop
+                model="gemini-3.1-flash-lite",
+                history=contents, #type: ignore
+                config=types.GenerateContentConfig(tools=[tools],
+                    system_instruction=build_system_instruction(memory, browser_url, now, persist_mode, tool_log)
+            ),)
+        response = await chat.send_message(prompt)
+        response, give_up, tool_entries = await _run_tool_loop(chat, response, persist_mode, status_callback, conversation_id, confirm_callback, chat_id) #Executes any tool calls the model requested
+        return _finalize_reply(response, give_up), give_up, tool_entries
+    finally:
+        _active_generations.discard(chat_id)
+        _cancel_requests.discard(chat_id) #a cancel that arrived too late to be seen shouldn't linger
 
 def _describe_error(e: Exception) -> str:
     """Turns an exception into a friendly user-facing message, using the API's real
@@ -473,7 +490,7 @@ async def respond(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE) -
             database.set_setting("chat_id", chat_id)
         conversation_id = database.get_active_conversation_id()
         add_to_conversation("user", user_message, conversation_id) #Saves the user's message to the conversation history in the database
-        final_text, _, tool_entries = await _generate_response(user_message, PERSIST_MODE, on_status, confirm)
+        final_text, _, tool_entries = await _generate_response(user_message, chat_id=int_chat_id, persist_mode=PERSIST_MODE, status_callback=on_status, confirm_callback=confirm)
         add_to_conversation("model", final_text, conversation_id, tool_log="\n".join(tool_entries)) #Saves the AI's response to the conversation history in the database
         for chunk in _chunk_message(final_text): #Sends the AI's response back to the user on Telegram
             await update.message.reply_text(chunk)
@@ -492,6 +509,22 @@ async def respond(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE) -
    
     
    
+async def cancel(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Stops the task currently running for this chat. The flag is picked up before the next
+    tool call, so the action already in progress still finishes; a pending risky-tool
+    confirmation is auto-denied so the loop isn't left waiting on it."""
+    if update.message is None or update.effective_chat is None:
+        return
+    chat_id = update.effective_chat.id
+    pending = _pending_confirmations.get(chat_id)
+    if chat_id not in _active_generations and (pending is None or pending.done()):
+        await update.message.reply_text("Nothing is running right now.")
+        return
+    _cancel_requests.add(chat_id)
+    if pending is not None and not pending.done():
+        pending.set_result("no") #deny the pending confirmation so the tool loop unblocks immediately
+    await update.message.reply_text("Okay - cancelling. I'll stop after the current action finishes.")
+
 async def clear(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.message is None:
         return
@@ -576,7 +609,7 @@ async def proactive_check(context: ContextTypes.DEFAULT_TYPE) -> None:
     typing_task = asyncio.create_task(_keep_typing(context.bot, int_chat_id, stop_typing))
     confirm = _make_confirm_callback(context.bot, int_chat_id)
     try:
-        final_text, give_up, tool_entries = await _generate_response(CHECKIN_PROMPT, confirm_callback=confirm)
+        final_text, give_up, tool_entries = await _generate_response(CHECKIN_PROMPT, chat_id=int_chat_id, confirm_callback=confirm)
     except Exception:
         logger.exception("Proactive check-in failed")
         stop_typing.set()
@@ -614,7 +647,7 @@ async def check_scheduled_tasks(context: ContextTypes.DEFAULT_TYPE) -> None:
         typing_task = asyncio.create_task(_keep_typing(context.bot, int_chat_id, stop_typing))
         confirm = _make_confirm_callback(context.bot, int_chat_id)
         try:
-            final_text, _, tool_entries = await _generate_response(SCHEDULED_TASK_PROMPT.format(task=task["task"]), confirm_callback=confirm)
+            final_text, _, tool_entries = await _generate_response(SCHEDULED_TASK_PROMPT.format(task=task["task"]), chat_id=int_chat_id, confirm_callback=confirm)
         except Exception:
             logger.exception("Scheduled task failed")
             final_text = f"I tried to run a scheduled task but hit an error: {task['task']}"
@@ -635,6 +668,7 @@ async def check_scheduled_tasks(context: ContextTypes.DEFAULT_TYPE) -> None:
 async def _post_init(application: Any) -> None:
     await application.bot.set_my_commands([
         telegram.BotCommand("start", "Greet the bot"),
+        telegram.BotCommand("cancel", "Stop the task the bot is currently working on"),
         telegram.BotCommand("clear", "Clear the active conversation's history"),
         telegram.BotCommand("persist", "Toggle persistent mode (don't give up until the task is done)"),
         telegram.BotCommand("bypass", "DANGER: toggle skipping the confirmation prompt for risky actions"),
@@ -654,6 +688,7 @@ def main() -> None:
     #the default sequential mode would deadlock (the awaiting handler blocks the next update)
     application = ApplicationBuilder().token(telegram_key).post_init(_post_init).concurrent_updates(True).build() # type: ignore
     application.add_handler(CommandHandler("start", start, filters=user_filter))
+    application.add_handler(CommandHandler("cancel", cancel, filters=user_filter))
     application.add_handler(CommandHandler("clear", clear, filters=user_filter))
     application.add_handler(CommandHandler("persist", toggle_persist, filters=user_filter))
     application.add_handler(CommandHandler("bypass", toggle_bypass, filters=user_filter))
