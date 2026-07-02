@@ -1,5 +1,5 @@
 import telegram
-from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters
+from telegram.ext import ApplicationBuilder, CallbackQueryHandler, ContextTypes, CommandHandler, MessageHandler, filters
 from dotenv import load_dotenv
 import os
 import asyncio
@@ -155,8 +155,12 @@ BYPASS_CONFIRM = False
 RISKY_TOOLS = {"run_shell", "run_background", "gmail_send_email", "move_file"}
 CONFIRM_TIMEOUT_SECONDS = 120 #How long to wait for a yes/no before defaulting to deny
 _APPROVE_WORDS = {"yes", "y", "approve", "confirm", "ok", "sure"}
-#Maps a chat_id to a Future that the tool loop is awaiting; resolved by the next message
-#that chat sends (intercepted at the top of respond()). One pending confirmation per chat.
+#callback_data values for the inline Approve/Deny buttons on confirmation prompts
+CONFIRM_YES = "confirm_yes"
+CONFIRM_NO = "confirm_no"
+#Maps a chat_id to a Future that the tool loop is awaiting; resolved by tapping an inline
+#button (on_confirm_button) or by the chat's next text message (intercepted at the top of
+#respond() - typing 'yes' still works). One pending confirmation per chat.
 _pending_confirmations: dict[int, asyncio.Future] = {}
 #Chats with a generation currently in flight, and chats that asked to /cancel it. The tool
 #loop checks _cancel_requests before each tool call, so cancelling stops the task after the
@@ -318,18 +322,33 @@ def _make_confirm_callback(bot: Any, chat_id: int):
         loop = asyncio.get_running_loop()
         fut = loop.create_future()
         _pending_confirmations[chat_id] = fut
+        keyboard = telegram.InlineKeyboardMarkup([[
+            telegram.InlineKeyboardButton("✅ Approve", callback_data=CONFIRM_YES),
+            telegram.InlineKeyboardButton("❌ Deny", callback_data=CONFIRM_NO),
+        ]])
+        prompt_text = f"⚠️ I want to run:\n{description}"
+        answer: str | None = None #None = timed out (vs an explicit denial)
         try:
-            await bot.send_message(
-                chat_id=chat_id,
-                text=f"⚠️ I want to run:\n{description}\n\nReply 'yes' to approve, anything else to cancel.",
-            )
+            prompt_msg = await bot.send_message(chat_id=chat_id, text=prompt_text, reply_markup=keyboard)
             answer = await asyncio.wait_for(fut, timeout=CONFIRM_TIMEOUT_SECONDS)
         except asyncio.TimeoutError:
-            await bot.send_message(chat_id=chat_id, text="No response - action cancelled.")
-            return False
+            pass
         finally:
             _pending_confirmations.pop(chat_id, None)
-        return answer.strip().lower() in _APPROVE_WORDS
+        approved = answer is not None and answer.strip().lower() in _APPROVE_WORDS
+        if approved:
+            outcome = "✅ Approved"
+        elif answer is None:
+            outcome = "⏰ No response - action cancelled."
+        else:
+            outcome = "❌ Denied"
+        #Edit the prompt to show the outcome and drop the buttons, so a stale prompt can't
+        #be tapped later and the chat log reads as a record of what was approved.
+        try:
+            await prompt_msg.edit_text(f"{prompt_text}\n\n{outcome}")
+        except Exception:
+            pass
+        return approved
     return confirm
 
 async def _run_tool_loop(chat: Any, response: Any, persist_mode: bool = False, status_callback: Any = None, conversation_id: int = 0, confirm_callback: Any = None, chat_id: int = 0) -> tuple[Any, bool, list[str]]:
@@ -509,6 +528,27 @@ async def respond(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE) -
    
     
    
+async def on_confirm_button(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Resolves the pending confirmation Future when the owner taps Approve/Deny on a
+    confirmation prompt. Stale taps (no confirmation waiting anymore) just clear the buttons."""
+    query = update.callback_query
+    if query is None:
+        return
+    if update.effective_user is None or update.effective_user.id != ALLOWED_USER_ID:
+        await query.answer() #CallbackQueryHandler can't take a user filter, so enforce it here
+        return
+    chat_id = update.effective_chat.id if update.effective_chat else None
+    pending = _pending_confirmations.get(chat_id) if chat_id is not None else None
+    if pending is None or pending.done():
+        await query.answer("This confirmation has expired.")
+        try:
+            await query.edit_message_reply_markup(None)
+        except Exception:
+            pass
+        return
+    pending.set_result("yes" if query.data == CONFIRM_YES else "no")
+    await query.answer()
+
 async def cancel(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Stops the task currently running for this chat. The flag is picked up before the next
     tool call, so the action already in progress still finishes; a pending risky-tool
@@ -688,6 +728,7 @@ def main() -> None:
     #the default sequential mode would deadlock (the awaiting handler blocks the next update)
     application = ApplicationBuilder().token(telegram_key).post_init(_post_init).concurrent_updates(True).build() # type: ignore
     application.add_handler(CommandHandler("start", start, filters=user_filter))
+    application.add_handler(CallbackQueryHandler(on_confirm_button, pattern=r"^confirm_"))
     application.add_handler(CommandHandler("cancel", cancel, filters=user_filter))
     application.add_handler(CommandHandler("clear", clear, filters=user_filter))
     application.add_handler(CommandHandler("persist", toggle_persist, filters=user_filter))

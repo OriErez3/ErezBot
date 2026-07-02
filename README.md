@@ -7,7 +7,7 @@ The bot only responds to a single Telegram user (you). Anyone else who messages 
 ## Features
 
 - **Agentic tool loop** — the model chains tool calls (up to 20 per request, 100 in persist mode) until the task is done, with duplicate-call detection so it can't get stuck repeating itself.
-- **Shell access with guardrails** — risky tools (shell commands, background processes, sending email, moving files) require a yes/no confirmation in the chat before they run. Truly destructive commands (`format`, `diskpart`, fork bombs, ...) are always blocked, even if approved.
+- **Shell access with guardrails** — risky tools (shell commands, background processes, sending email, moving files) require a one-tap Approve/Deny confirmation in the chat before they run (typing "yes" works too). Truly destructive commands (`format`, `diskpart`, fork bombs, ...) are always blocked, even if approved.
 - **Long-running processes** — servers and watchers run in the background with an ID; the bot can read their output, list them, and stop them. A shell command that turns out to be long-running is automatically moved to the background instead of hanging.
 - **Browser automation** — a visible Chromium window driven by Playwright: navigate, screenshot, click (by coordinate or by indexed element map), type, scroll.
 - **Google integration** — Gmail (list/read/send/mark read), Calendar (list/create events), Drive (list/read/upload).
