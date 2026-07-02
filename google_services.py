@@ -8,7 +8,7 @@ from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
-from googleapiclient.http import MediaInMemoryUpload
+from googleapiclient.http import MediaInMemoryUpload, MediaIoBaseDownload
 
 SCOPES = [
     "https://www.googleapis.com/auth/gmail.modify",
@@ -282,6 +282,38 @@ def drive_read_file(file_id: str) -> str:
         else:
             text = str(data)
         return f"{meta['name']}:\n{text[:3000]}"
+    except Exception as e:
+        return f"Error: {e}"
+
+
+def drive_download_file(file_id: str, destination_path: str) -> str:
+    """Downloads a file from the user's Google Drive to the local filesystem. Use this to
+    save a Drive file to disk (drive_read_file only shows text content in the conversation).
+    Native Google Docs/Sheets/Slides are exported as text/CSV; everything else (PDFs,
+    images, zips, ...) is downloaded as-is. Streams in chunks, so large files are fine.
+
+    Args:
+        file_id: The id of the file, from drive_list_files.
+        destination_path: Absolute local path to save the file to, including the filename.
+    """
+    try:
+        service = _drive()
+        meta = service.files().get(fileId=file_id, fields="mimeType,name").execute()
+        mime_type = meta["mimeType"]
+        if mime_type in GOOGLE_DOC_EXPORT_MIME:
+            request = service.files().export_media(fileId=file_id, mimeType=GOOGLE_DOC_EXPORT_MIME[mime_type])
+        else:
+            request = service.files().get_media(fileId=file_id)
+        parent = os.path.dirname(destination_path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        with open(destination_path, "wb") as f:
+            downloader = MediaIoBaseDownload(f, request)
+            done = False
+            while not done:
+                _, done = downloader.next_chunk()
+        size = os.path.getsize(destination_path)
+        return f"Downloaded '{meta['name']}' ({size} bytes) to {destination_path}"
     except Exception as e:
         return f"Error: {e}"
 
