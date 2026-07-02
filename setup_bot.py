@@ -129,7 +129,7 @@ def setup_google() -> None:
 
 
 def main() -> None:
-    print("=== ClawBotClone setup ===")
+    print("=== ErezBot setup ===")
     check_python()
     install_dependencies()
     configure_env()

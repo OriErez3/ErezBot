@@ -1,4 +1,4 @@
-# ClawBotClone
+# ErezBot
 
 A personal AI assistant that lives in Telegram. It's powered by Gemini and can use a real set of tools on your machine: run shell commands, manage files, browse the web with a visible browser, search the web, read and send Gmail, manage Google Calendar and Drive, remember facts about you, and run tasks on a schedule — including proactively checking your email and calendar every hour and messaging you if something needs your attention.
 
@@ -116,34 +116,34 @@ Code travels via git; the gitignored secrets travel via `scp`:
 
 ```bash
 # on the server
-git clone <your repo url> ~/ClawBotClone
+git clone <your repo url> ~/ErezBot
 # from your old machine
-scp .env credentials.json token.json memory.db user@server:~/ClawBotClone/
+scp .env credentials.json token.json memory.db user@server:~/ErezBot/
 ```
 
 Copying `token.json` matters: the Google consent flow (`setup_auth`) needs a browser, which a headless server doesn't have — but a `token.json` created elsewhere works anywhere and refreshes itself. `memory.db` is optional (brings conversations, memories, and pending scheduled tasks along).
 
 ```bash
 sudo apt update && sudo apt install -y python3-venv xvfb
-cd ~/ClawBotClone
+cd ~/ErezBot
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 playwright install --with-deps chromium     # --with-deps needs sudo: installs Chromium's system libraries
 sudo timedatectl set-timezone <your zone>   # the bot resolves "tomorrow at 5pm" in server-local time
 ```
 
-Test it interactively first: `xvfb-run -a python main.py` (or set `BROWSER_HEADLESS=true` in `.env` and run plain `python main.py`). Then install it as a service so it starts on boot and restarts on crashes — `/etc/systemd/system/clawbot.service`:
+Test it interactively first: `xvfb-run -a python main.py` (or set `BROWSER_HEADLESS=true` in `.env` and run plain `python main.py`). Then install it as a service so it starts on boot and restarts on crashes — `/etc/systemd/system/erezbot.service`:
 
 ```ini
 [Unit]
-Description=ClawBot Telegram assistant
+Description=ErezBot Telegram assistant
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 User=youruser
-WorkingDirectory=/home/youruser/ClawBotClone
-ExecStart=/usr/bin/xvfb-run -a /home/youruser/ClawBotClone/.venv/bin/python main.py
+WorkingDirectory=/home/youruser/ErezBot
+ExecStart=/usr/bin/xvfb-run -a /home/youruser/ErezBot/.venv/bin/python main.py
 Restart=on-failure
 RestartSec=10
 # Optional, for small servers sharing RAM with other services (e.g. a game server):
@@ -155,8 +155,8 @@ WantedBy=multi-user.target
 
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl enable --now clawbot
-journalctl -u clawbot -f    # live logs
+sudo systemctl enable --now erezbot
+journalctl -u erezbot -f    # live logs
 ```
 
 Important: run only ONE instance per bot token. Two pollers (e.g. the old Windows machine and the server) fight over Telegram updates and both break — stop the old one before starting the new one.
@@ -168,19 +168,19 @@ The `deploy/` folder contains a poll-based deployer: every 2 minutes the server 
 Setup on the server (after the base install above):
 
 ```bash
-cd ~/ClawBotClone
+cd ~/ErezBot
 chmod +x deploy/deploy.sh
 
 # Allow the deploy script (running as your user) to restart the bot - and nothing else:
-echo "$USER ALL=(root) NOPASSWD: /usr/bin/systemctl restart clawbot" | sudo tee /etc/sudoers.d/clawbot-deploy
+echo "$USER ALL=(root) NOPASSWD: /usr/bin/systemctl restart erezbot" | sudo tee /etc/sudoers.d/erezbot-deploy
 
-# Edit User= and paths in deploy/clawbot-deploy.service to match your user, then:
-sudo cp deploy/clawbot-deploy.service deploy/clawbot-deploy.timer /etc/systemd/system/
+# Edit User= and paths in deploy/erezbot-deploy.service to match your user, then:
+sudo cp deploy/erezbot-deploy.service deploy/erezbot-deploy.timer /etc/systemd/system/
 sudo systemctl daemon-reload
-sudo systemctl enable --now clawbot-deploy.timer
+sudo systemctl enable --now erezbot-deploy.timer
 
-journalctl -u clawbot-deploy -f     # watch deploys happen
-systemctl list-timers clawbot-deploy.timer   # see when the next check fires
+journalctl -u erezbot-deploy -f     # watch deploys happen
+systemctl list-timers erezbot-deploy.timer   # see when the next check fires
 ```
 
 From then on, `git push` to main is a deploy: the bot restarts on the new code within ~2 minutes. The script uses `git reset --hard origin/main`, so never make local edits in the server checkout — they'll be discarded (your untracked `.env`, `token.json`, `credentials.json`, and `memory.db` are safe).

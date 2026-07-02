@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # Auto-deploy: pulls new commits on main and restarts the bot if anything changed.
-# Run periodically by clawbot-deploy.timer; safe to run by hand too. Exits quietly
+# Run periodically by erezbot-deploy.timer; safe to run by hand too. Exits quietly
 # when already up to date, so the journal only shows lines when a deploy happened.
 set -euo pipefail
 
-REPO_DIR="${REPO_DIR:-$HOME/ClawBotClone}"
+REPO_DIR="${REPO_DIR:-$HOME/ErezBot}"
 BRANCH="main"
-SERVICE="clawbot"
+SERVICE="erezbot"
 
 cd "$REPO_DIR"
 git fetch origin "$BRANCH" --quiet

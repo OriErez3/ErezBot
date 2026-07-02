@@ -1,12 +1,12 @@
-# Oneshot unit run by clawbot-deploy.timer. Runs as your user (the repo owner);
+# Oneshot unit run by erezbot-deploy.timer. Runs as your user (the repo owner);
 # the only root action is the systemctl restart, allowed by a narrow sudoers rule
 # (see README). Edit User= and the path to match your server.
 [Unit]
-Description=ClawBot auto-deploy (pull + restart on new commits)
+Description=ErezBot auto-deploy (pull + restart on new commits)
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=oneshot
 User=youruser
-ExecStart=/home/youruser/ClawBotClone/deploy/deploy.sh
+ExecStart=/home/youruser/ErezBot/deploy/deploy.sh
