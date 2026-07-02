@@ -95,6 +95,7 @@ Then message your bot on Telegram. The first message also registers your chat as
 | `/rename <name>` | Rename the active conversation |
 | `/persist` | Toggle persistent mode — the bot won't give up on a task until it's done (raises the tool-call cap from 20 to 100) |
 | `/bypass` | ⚠️ Toggle skipping the confirmation prompt for risky actions. The hard blocklist still applies. Use with care. |
+| `/update` | Pull the latest commits for the current branch and restart on the new code (manual counterpart to the auto-deploy timer) |
 
 ## Project layout
 

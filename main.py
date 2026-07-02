@@ -11,6 +11,8 @@ import google_services as gs
 import database
 import platform
 import inspect
+import subprocess
+import sys
 import base64
 import logging
 import re
@@ -680,6 +682,54 @@ async def toggle_bypass(update: telegram.Update, context: ContextTypes.DEFAULT_T
         status = "OFF - I'll ask before risky actions again."
     await update.message.reply_text(f"Confirmation bypass is now {status}")
 
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+async def update_bot(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Manual deploy trigger: pulls the latest commits for the *current branch* and restarts
+    the bot on the new code. Complements the auto-deploy timer (which only watches main) -
+    useful for 'I want it now' and for testing a feature branch on the server."""
+    if update.message is None or update.effective_chat is None:
+        return
+    if _get_generation_lock(update.effective_chat.id).locked():
+        await update.message.reply_text("A task is running right now - restarting would kill it. Finish or /cancel it first, then /update again.")
+        return
+    def git(*args: str) -> subprocess.CompletedProcess:
+        return subprocess.run(["git", *args], capture_output=True, text=True, cwd=BASE_DIR)
+    #Refuse to clobber uncommitted work - matters on a dev machine, never on the server
+    dirty = await asyncio.to_thread(git, "status", "--porcelain", "--untracked-files=no")
+    if dirty.stdout.strip():
+        await update.message.reply_text("There are uncommitted local changes - refusing to update over them.")
+        return
+    branch = (await asyncio.to_thread(git, "rev-parse", "--abbrev-ref", "HEAD")).stdout.strip()
+    fetch = await asyncio.to_thread(git, "fetch", "origin", branch)
+    if fetch.returncode != 0:
+        await update.message.reply_text(f"git fetch failed:\n{fetch.stderr[:500]}")
+        return
+    local = (await asyncio.to_thread(git, "rev-parse", "HEAD")).stdout.strip()
+    remote = (await asyncio.to_thread(git, "rev-parse", f"origin/{branch}")).stdout.strip()
+    if local == remote:
+        await update.message.reply_text(f"Already up to date ({branch} @ {local[:7]}).")
+        return
+    reset = await asyncio.to_thread(git, "reset", "--hard", f"origin/{branch}")
+    if reset.returncode != 0:
+        await update.message.reply_text(f"git reset failed:\n{reset.stderr[:500]}")
+        return
+    pip = await asyncio.to_thread(
+        subprocess.run,
+        [sys.executable, "-m", "pip", "install", "-r", os.path.join(BASE_DIR, "requirements.txt")],
+        capture_output=True, text=True,
+    )
+    if pip.returncode != 0:
+        #New code is on disk but deps failed - don't restart into a broken state
+        await update.message.reply_text(f"pip install failed - NOT restarting:\n{pip.stderr[-500:]}")
+        return
+    await update.message.reply_text(f"Updated {branch}: {local[:7]} -> {remote[:7]}. Restarting - back in a few seconds.")
+    args = [sys.executable, *sys.argv]
+    if os.name == "nt":
+        #Windows execv doesn't quote args itself; paths with spaces break without this
+        args = [f'"{a}"' if " " in a else a for a in args]
+    os.execv(sys.executable, args) #Replaces this process with a fresh one on the new code
+
 async def new_conversation(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.message is None:
         return
@@ -803,6 +853,7 @@ async def _post_init(application: Any) -> None:
         telegram.BotCommand("list", "List all conversations"),
         telegram.BotCommand("switch", "Switch to a conversation by number"),
         telegram.BotCommand("rename", "Rename the active conversation"),
+        telegram.BotCommand("update", "Pull the latest code from the repo and restart"),
     ])
 
 def main() -> None:
@@ -824,6 +875,7 @@ def main() -> None:
     application.add_handler(CommandHandler("list", list_conversations_cmd, filters=user_filter))
     application.add_handler(CommandHandler("switch", switch_conversation, filters=user_filter))
     application.add_handler(CommandHandler("rename", rename_conversation_cmd, filters=user_filter))
+    application.add_handler(CommandHandler("update", update_bot, filters=user_filter))
     application.job_queue.run_repeating( #type: ignore
         proactive_check,
         interval=CHECKIN_INTERVAL_MINUTES * 60,
