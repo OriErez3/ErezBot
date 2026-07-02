@@ -167,6 +167,19 @@ _pending_confirmations: dict[int, asyncio.Future] = {}
 #action already in progress finishes - it can't abort a tool mid-execution.
 _active_generations: set[int] = set()
 _cancel_requests: set[int] = set()
+#One generation at a time per chat: with concurrent_updates(True) a second message would
+#otherwise start a parallel tool loop that fights the first over the shared browser, the
+#conversation history, and the single confirmation slot. Messages queue on the lock instead.
+#Confirmation replies and /cancel are handled before/without the lock, so they still get
+#through instantly while a task runs.
+_generation_locks: dict[int, asyncio.Lock] = {}
+
+def _get_generation_lock(chat_id: int) -> asyncio.Lock:
+    lock = _generation_locks.get(chat_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _generation_locks[chat_id] = lock
+    return lock
 CHECKIN_INTERVAL_MINUTES = 60
 CHECKIN_PROMPT = (
     "[Automated periodic check-in] Use gmail_list_messages with query 'is:unread' to check for "
@@ -490,39 +503,47 @@ async def respond(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE) -
     if pending is not None and not pending.done():
         pending.set_result(update.message.text)
         return
-    status_msg = await context.bot.send_message(chat_id=int_chat_id, text="Thinking...")
-    stop_typing = asyncio.Event()
-    typing_task = asyncio.create_task(_keep_typing(context.bot, int_chat_id, stop_typing))
+    lock = _get_generation_lock(int_chat_id)
+    if lock.locked():
+        #A task is already running - tell the user this message is queued, not lost
+        await update.message.reply_text(
+            "Got it - I'll start on this as soon as the current task finishes. (Send /cancel to stop that one.)",
+            disable_notification=True,
+        )
+    async with lock:
+        status_msg = await context.bot.send_message(chat_id=int_chat_id, text="Thinking...")
+        stop_typing = asyncio.Event()
+        typing_task = asyncio.create_task(_keep_typing(context.bot, int_chat_id, stop_typing))
 
-    async def on_status(text: str) -> None:
+        async def on_status(text: str) -> None:
+            try:
+                await status_msg.edit_text(text)
+            except Exception:
+                pass
+
+        confirm = _make_confirm_callback(context.bot, int_chat_id)
+
         try:
-            await status_msg.edit_text(text)
-        except Exception:
-            pass
-
-    confirm = _make_confirm_callback(context.bot, int_chat_id)
-
-    try:
-        user_message = update.message.text
-        chat_id = str(int_chat_id) #Captures where to send proactive/unprompted messages later
-        if database.get_setting("chat_id") != chat_id:
-            database.set_setting("chat_id", chat_id)
-        conversation_id = database.get_active_conversation_id()
-        add_to_conversation("user", user_message, conversation_id) #Saves the user's message to the conversation history in the database
-        final_text, _, tool_entries = await _generate_response(user_message, chat_id=int_chat_id, persist_mode=PERSIST_MODE, status_callback=on_status, confirm_callback=confirm)
-        add_to_conversation("model", final_text, conversation_id, tool_log="\n".join(tool_entries)) #Saves the AI's response to the conversation history in the database
-        for chunk in _chunk_message(final_text): #Sends the AI's response back to the user on Telegram
-            await update.message.reply_text(chunk)
-    except Exception as e:
-        logger.exception("Failed to handle message") #Keep a full traceback in the console, not just the Telegram reply
-        await update.message.reply_text(_describe_error(e))
-    finally:
-        stop_typing.set()
-        typing_task.cancel()
-        try:
-            await status_msg.delete()
-        except Exception:
-            pass
+            user_message = update.message.text
+            chat_id = str(int_chat_id) #Captures where to send proactive/unprompted messages later
+            if database.get_setting("chat_id") != chat_id:
+                database.set_setting("chat_id", chat_id)
+            conversation_id = database.get_active_conversation_id()
+            add_to_conversation("user", user_message, conversation_id) #Saves the user's message to the conversation history in the database
+            final_text, _, tool_entries = await _generate_response(user_message, chat_id=int_chat_id, persist_mode=PERSIST_MODE, status_callback=on_status, confirm_callback=confirm)
+            add_to_conversation("model", final_text, conversation_id, tool_log="\n".join(tool_entries)) #Saves the AI's response to the conversation history in the database
+            for chunk in _chunk_message(final_text): #Sends the AI's response back to the user on Telegram
+                await update.message.reply_text(chunk)
+        except Exception as e:
+            logger.exception("Failed to handle message") #Keep a full traceback in the console, not just the Telegram reply
+            await update.message.reply_text(_describe_error(e))
+        finally:
+            stop_typing.set()
+            typing_task.cancel()
+            try:
+                await status_msg.delete()
+            except Exception:
+                pass
    
 
    
@@ -644,35 +665,33 @@ async def proactive_check(context: ContextTypes.DEFAULT_TYPE) -> None:
     if not chat_id:
         return
     int_chat_id = int(chat_id)
-    #Silent - this fires every hour and usually finds nothing; the notification for the
-    #deleted status message would still ping the user's phone. A real report still notifies.
-    status_msg = await context.bot.send_message(chat_id=int_chat_id, text="Checking in...", disable_notification=True)
-    stop_typing = asyncio.Event()
-    typing_task = asyncio.create_task(_keep_typing(context.bot, int_chat_id, stop_typing))
-    confirm = _make_confirm_callback(context.bot, int_chat_id)
-    try:
-        final_text, give_up, tool_entries = await _generate_response(CHECKIN_PROMPT, chat_id=int_chat_id, confirm_callback=confirm)
-    except Exception:
-        logger.exception("Proactive check-in failed")
-        stop_typing.set()
-        typing_task.cancel()
+    lock = _get_generation_lock(int_chat_id)
+    if lock.locked():
+        return #the user's task takes priority - skip this cycle, the next one is an hour away
+    async with lock:
+        #Silent - this fires every hour and usually finds nothing; the notification for the
+        #deleted status message would still ping the user's phone. A real report still notifies.
+        status_msg = await context.bot.send_message(chat_id=int_chat_id, text="Checking in...", disable_notification=True)
+        stop_typing = asyncio.Event()
+        typing_task = asyncio.create_task(_keep_typing(context.bot, int_chat_id, stop_typing))
+        confirm = _make_confirm_callback(context.bot, int_chat_id)
         try:
-            await status_msg.delete()
+            final_text, give_up, tool_entries = await _generate_response(CHECKIN_PROMPT, chat_id=int_chat_id, confirm_callback=confirm)
         except Exception:
-            pass
-        return
-    finally:
-        stop_typing.set()
-        typing_task.cancel()
-        try:
-            await status_msg.delete()
-        except Exception:
-            pass
-    if give_up or final_text.strip().upper() == "NOTHING_TO_REPORT":
-        return
-    for chunk in _chunk_message(final_text):
-        await context.bot.send_message(chat_id=int_chat_id, text=chunk)
-    add_to_conversation("model", final_text, database.get_active_conversation_id(), tool_log="\n".join(tool_entries))
+            logger.exception("Proactive check-in failed")
+            return
+        finally:
+            stop_typing.set()
+            typing_task.cancel()
+            try:
+                await status_msg.delete()
+            except Exception:
+                pass
+        if give_up or final_text.strip().upper() == "NOTHING_TO_REPORT":
+            return
+        for chunk in _chunk_message(final_text):
+            await context.bot.send_message(chat_id=int_chat_id, text=chunk)
+        add_to_conversation("model", final_text, database.get_active_conversation_id(), tool_log="\n".join(tool_entries))
 
 async def check_scheduled_tasks(context: ContextTypes.DEFAULT_TYPE) -> None:
     """Runs and clears any scheduled tasks whose due time has passed, using the full tool loop
@@ -684,27 +703,30 @@ async def check_scheduled_tasks(context: ContextTypes.DEFAULT_TYPE) -> None:
         #survives and gets re-queued on the next startup instead of silently vanishing
         database.mark_task_running(task["id"])
         int_chat_id = int(task["chat_id"])
-        status_msg = await context.bot.send_message(chat_id=int_chat_id, text="Running scheduled task...", disable_notification=True)
-        stop_typing = asyncio.Event()
-        typing_task = asyncio.create_task(_keep_typing(context.bot, int_chat_id, stop_typing))
-        confirm = _make_confirm_callback(context.bot, int_chat_id)
-        try:
-            final_text, _, tool_entries = await _generate_response(SCHEDULED_TASK_PROMPT.format(task=task["task"]), chat_id=int_chat_id, confirm_callback=confirm)
-        except Exception:
-            logger.exception("Scheduled task failed")
-            final_text = f"I tried to run a scheduled task but hit an error: {task['task']}"
-            tool_entries = []
-        finally:
-            stop_typing.set()
-            typing_task.cancel()
+        #Waits for the lock (unlike the check-in, which skips): the user explicitly asked
+        #for this to run, so it queues behind whatever is in flight rather than being dropped.
+        async with _get_generation_lock(int_chat_id):
+            status_msg = await context.bot.send_message(chat_id=int_chat_id, text="Running scheduled task...", disable_notification=True)
+            stop_typing = asyncio.Event()
+            typing_task = asyncio.create_task(_keep_typing(context.bot, int_chat_id, stop_typing))
+            confirm = _make_confirm_callback(context.bot, int_chat_id)
             try:
-                await status_msg.delete()
+                final_text, _, tool_entries = await _generate_response(SCHEDULED_TASK_PROMPT.format(task=task["task"]), chat_id=int_chat_id, confirm_callback=confirm)
             except Exception:
-                pass
-        database.delete_scheduled_task(task["id"])
-        for chunk in _chunk_message(final_text):
-            await context.bot.send_message(chat_id=int_chat_id, text=chunk)
-        add_to_conversation("model", final_text, database.get_active_conversation_id(), tool_log="\n".join(tool_entries))
+                logger.exception("Scheduled task failed")
+                final_text = f"I tried to run a scheduled task but hit an error: {task['task']}"
+                tool_entries = []
+            finally:
+                stop_typing.set()
+                typing_task.cancel()
+                try:
+                    await status_msg.delete()
+                except Exception:
+                    pass
+            database.delete_scheduled_task(task["id"])
+            for chunk in _chunk_message(final_text):
+                await context.bot.send_message(chat_id=int_chat_id, text=chunk)
+            add_to_conversation("model", final_text, database.get_active_conversation_id(), tool_log="\n".join(tool_entries))
 
 
 async def _post_init(application: Any) -> None:
