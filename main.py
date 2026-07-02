@@ -558,6 +558,31 @@ async def respond(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE) -
         pending.set_result(update.message.text)
         return
     await _handle_user_request(update, context, user_message=update.message.text, history_text=update.message.text)
+
+#Cost control: Gemini bills images by 768px tiles, so resolution directly drives token cost.
+#Telegram offers each photo in several sizes (~90/320/800/1280/2560px); we take the largest
+#one at or under this cap instead of the full-res original. 800 keeps screenshots/receipts
+#readable at a fraction of the cost - bump to 1280 if fine text comes out misread.
+PHOTO_MAX_DIMENSION = 800
+
+async def respond_photo(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handles a photo message: downloads a cost-capped resolution (see PHOTO_MAX_DIMENSION)
+    and sends it to the model as an image part, with the caption (if any) as the prompt.
+    History gets a '[photo]' placeholder - the image itself is only seen for this turn."""
+    if update.message is None or not update.message.photo or update.effective_chat is None:
+        return
+    #Sizes come smallest-first; take the largest within the cap, or the smallest if somehow all exceed it
+    photo = next(
+        (p for p in reversed(update.message.photo) if max(p.width, p.height) <= PHOTO_MAX_DIMENSION),
+        update.message.photo[0],
+    )
+    file = await context.bot.get_file(photo.file_id)
+    image_bytes = bytes(await file.download_as_bytearray())
+    caption = (update.message.caption or "").strip()
+    user_message = caption if caption else "The user sent this photo with no caption. Look at it and respond appropriately."
+    history_text = f"[photo] {caption}" if caption else "[photo]"
+    media = [types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg")] #Telegram photos are always JPEG
+    await _handle_user_request(update, context, user_message=user_message, history_text=history_text, media_parts=media)
    
 
    
@@ -786,6 +811,7 @@ def main() -> None:
         first=SCHEDULED_TASK_POLL_SECONDS,
     )
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & user_filter, respond))
+    application.add_handler(MessageHandler(filters.PHOTO & user_filter, respond_photo))
     application.run_polling(allowed_updates=telegram.Update.ALL_TYPES)
 
 if __name__ == "__main__":
