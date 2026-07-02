@@ -53,6 +53,8 @@ ALLOWED_USER_ID=<your numeric Telegram user id>
 - **TAVILY_KEY**: sign up at [tavily.com](https://tavily.com) (free tier is fine).
 - **ALLOWED_USER_ID**: your own Telegram user id (a number, not your @username). Message [@userinfobot](https://t.me/userinfobot) to get it. This is required — the bot has shell and email access, so it must only obey you.
 
+Optionally, add `GEMINI_MODEL=<model name>` to use a different Gemini model (defaults to `gemini-3.1-flash-lite`).
+
 ### 3. Connect your Google account
 
 1. In [Google Cloud Console](https://console.cloud.google.com/), create a project and enable the **Gmail API**, **Google Calendar API**, and **Google Drive API**.
@@ -98,6 +100,8 @@ Then message your bot on Telegram. The first message also registers your chat as
 | `tools.py` | Local tools: shell, background processes, files, downloads, web search, memory, browser automation |
 | `google_services.py` | Gmail, Calendar, and Drive tools plus the OAuth flow |
 | `database.py` | SQLite storage: conversations, memory, settings, scheduled tasks |
+| `setup_bot.py` | Interactive first-time setup (see Quick start) |
+| `test_helpers.py` | Unit tests for the command guardrails and reply helpers — run with `python -m unittest test_helpers` |
 
 Tool declarations are generated automatically from each function's signature and docstring — to add a tool, write the function and register it in `tool_dict` in `main.py`.
 

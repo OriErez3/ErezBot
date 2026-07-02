@@ -33,6 +33,8 @@ if gemini_key is None:
 if allowed_user_id is None:
     raise ValueError("ALLOWED_USER_ID environment variable is required - the bot has shell access, so it must only answer you. Set it to your Telegram user id.")
 ALLOWED_USER_ID = int(allowed_user_id)
+#Optional override so trying a different model doesn't require a code change
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite")
 
 client = genai.Client(api_key=gemini_key)
 
@@ -463,7 +465,7 @@ async def _generate_response(prompt: str, chat_id: int = 0, persist_mode: bool =
         logs = database.get_tool_logs(conversation_id)
         tool_log = "\n".join(f"- {entry}" for entry in logs)
         chat = client.aio.chats.create( #The async client - same API, but send_message can be awaited so it doesn't block the event loop
-                model="gemini-3.1-flash-lite",
+                model=GEMINI_MODEL,
                 history=contents, #type: ignore
                 config=types.GenerateContentConfig(tools=[tools],
                     system_instruction=build_system_instruction(memory, browser_url, now, persist_mode, tool_log)

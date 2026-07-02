@@ -41,8 +41,8 @@ _BLOCKED_PATTERNS = [
     r"\bdiskpart\b",
     r"\bmkfs\b",                  # unix filesystem wipe
     r"rm\s+-rf?\s+/(?:\s|$)",     # rm -rf / (root)
-    r"\bshutdown\b",
-    r"\brestart\b",
+    r"\bshutdown\b",              # Windows shutdown/reboot (shutdown /s, /r)
+    r"\breboot\b",                # unix equivalent; plain 'restart' was removed - it false-positived on innocent commands like `npm run restart`
     r"reg\s+delete\s+hk",         # registry hive deletion
     r":\(\)\s*\{\s*:\s*\|",       # fork bomb
 ]
@@ -62,7 +62,7 @@ def _download_command_redirect(command: str) -> Optional[str]:
     c = command.lower()
     is_download = (
         ("curl" in c and re.search(r"(^|\s)-o\b|--output|--remote-name", c)) or
-        re.search(r"(^|\s)wget\b", c) or
+        re.search(r"(^|\s)wget\s+\S", c) or  # wget followed by an argument - not `pip install wget` or a passing mention
         ("invoke-webrequest" in c and "outfile" in c) or
         (re.search(r"(^|\s)iwr\b", c) and "outfile" in c)
     )
