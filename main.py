@@ -79,6 +79,7 @@ tool_dict = {
     "schedule_task": t.schedule_task,
     "run_background": t.run_background,
     "read_process_output": t.read_process_output,
+    "send_process_input": t.send_process_input,
     "list_processes": t.list_processes,
     "stop_process": t.stop_process,
 }
@@ -294,6 +295,7 @@ _TOOL_STATUS: dict[str, str] = {
     "run_shell":             "Running a command...",
     "run_background":        "Starting a background process...",
     "read_process_output":   "Reading process output...",
+    "send_process_input":    "Typing into a process...",
     "stop_process":          "Stopping a process...",
     "list_processes":        "Listing processes...",
     "write_file":            "Writing a file...",

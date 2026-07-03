@@ -106,6 +106,7 @@ def run_shell(command: str) -> str:
         proc = subprocess.Popen(
             command,
             shell=True,
+            stdin=subprocess.PIPE,   # lets send_process_input type into it if it turns interactive
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
@@ -169,6 +170,7 @@ def run_background(command: str, working_directory: str = "") -> str:
         proc = subprocess.Popen(
             command,
             shell=True,
+            stdin=subprocess.PIPE,   # lets send_process_input type into it (menus, consoles, y/n prompts)
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
@@ -218,6 +220,35 @@ def list_processes() -> str:
         status = "running" if entry["process"].poll() is None else f"exited ({entry['process'].poll()})"
         lines.append(f"[{proc_id}] {status}: {entry['command']}")
     return "\n".join(lines)
+
+def send_process_input(process_id: int, text: str) -> str:
+    """Types a line into a running background process's console (its standard input),
+    like typing at its prompt and pressing Enter. Use this to answer interactive prompts
+    (y/n questions, menu selections) or to issue console commands to a process started
+    with run_background (or one run_shell moved to the background). Returns the process's
+    recent output so you can see how it reacted.
+
+    Args:
+        process_id: The ID returned by run_background or shown by list_processes.
+        text: The line to type. A newline (Enter) is appended automatically.
+    """
+    with _bg_lock:
+        entry = _bg_processes.get(process_id)
+    if entry is None:
+        return f"No background process with ID {process_id}. Use list_processes to see what's running."
+    proc = entry["process"]
+    if proc.poll() is not None:
+        return f"Process {process_id} already exited (code {proc.poll()}) - there's nothing to type into."
+    try:
+        proc.stdin.write(text + "\n")  # type: ignore[union-attr]
+        proc.stdin.flush()  # type: ignore[union-attr]
+    except Exception as e:
+        return f"Error sending input to process {process_id}: {e}"
+    time.sleep(1.0)  # give it a moment to react so the output below shows the response
+    lines = list(entry["buffer"])[-15:]
+    status = "running" if proc.poll() is None else f"exited with code {proc.poll()}"
+    output = "\n".join(lines) if lines else "(no output yet)"
+    return f"Input sent. Process {process_id} ({status}), recent output:\n{output}"
 
 def stop_process(process_id: int) -> str:
     """Stops a background process started with run_background.
