@@ -54,6 +54,9 @@ tool_dict = {
     "save_memory": t.save_memory,
     "delete_memory": t.delete_memory,
     "read_memory": t.read_memory,
+    "load_skill": t.load_skill,
+    "save_skill": t.save_skill,
+    "delete_skill": t.delete_skill,
     "find_file": t.find_file,
     "move_file": t.move_file,
     "web_search": t.web_search,
@@ -111,12 +114,17 @@ System info:
 Saved memory about the user:
 {memory}
 
+Skills - saved step-by-step playbooks for recurring tasks (full text via load_skill):
+{t.skills_index() or "(none saved yet)"}
+
 Browser state:
 - Current browser page: {browser_url}
 - This reflects reality right now, even if earlier conversation mentions a different page. Trust this over anything you previously said about the browser.
 
 Tool rules:
 - Use save_memory for important user facts, delete_memory when outdated, read_memory to recall facts
+- Skills: BEFORE starting a task that matches a skill description above, call load_skill and follow the playbook - it reflects how the user wants that exact task done and overrides your general approach
+- Skills: when the user teaches you a multi-step procedure, corrects how you did one, or you work out a non-obvious sequence worth reusing, offer to save_skill it (capture exact commands, paths, and pitfalls). Procedures go in skills; short standalone facts go in save_memory
 - For file operations ALWAYS use the dedicated tools: list_directory to see a folder's contents, read_file to read, write_file to write, move_file to move, find_file to locate, download_file to download. Do NOT use run_shell for these - never run `dir`, `ls`, `type`, `cat`, `copy`, `move`, `del`, `mkdir` and the like. run_shell is a last resort for things no dedicated tool covers (running a program, installing packages); it also interrupts the user with a confirmation prompt every time, so reaching for it when a dedicated tool exists is slow and annoying for them
 - File paths: always use absolute paths (e.g. {path_example}). Never use relative paths or write files into the bot working directory unless the user explicitly asks to
 - Working directory: when a task lives in a specific folder (setting up a server, building a project, etc.), pick that folder's absolute path ONCE and do everything inside it. Every write_file/download_file/read_file uses paths within it, AND every command must run there too: pass working_directory=<folder> to run_background, and prefix run_shell with `{cd_example}`. If you omit this, commands run in the bot directory ({cwd}) and won't see the files you created - which is almost always a bug. Never split one task across two folders or copy the files between them.
@@ -149,7 +157,7 @@ screenshot_tools = {"browser_navigate", "browser_screenshot", "browser_click", "
 #or inbox may have changed) or paging through content (scroll). These skip the duplicate
 #check; the iteration cap still limits them. Action tools (write_file, gmail_send_email,
 #browser_click...) keep the strict check - repeating those identically means a stuck loop.
-duplicate_exempt_tools = {"browser_screenshot", "browser_get_elements", "browser_current_url", "browser_scroll", "read_memory", "read_file", "list_directory", "gmail_list_messages", "gmail_read_message", "calendar_list_events", "drive_list_files", "drive_read_file"}
+duplicate_exempt_tools = {"browser_screenshot", "browser_get_elements", "browser_current_url", "browser_scroll", "read_memory", "read_file", "list_directory", "load_skill", "gmail_list_messages", "gmail_read_message", "calendar_list_events", "drive_list_files", "drive_read_file"}
 MAX_TOOL_ITERATIONS = 20
 PERSIST_MAX_TOOL_ITERATIONS = 100
 TELEGRAM_MAX_MESSAGE_CHARS = 4000 #Telegram rejects messages over 4096 chars - leave headroom
@@ -324,6 +332,9 @@ _TOOL_STATUS: dict[str, str] = {
     "drive_download_file":   "Downloading from Drive...",
     "save_memory":           "Saving to memory...",
     "read_memory":           "Reading memory...",
+    "load_skill":            "Loading a skill...",
+    "save_skill":            "Saving a skill...",
+    "delete_skill":          "Deleting a skill...",
     "schedule_task":         "Scheduling a task...",
 }
 
