@@ -199,14 +199,19 @@ def _get_generation_lock(chat_id: int) -> asyncio.Lock:
     return lock
 CHECKIN_INTERVAL_MINUTES = 60
 CHECKIN_PROMPT = (
-    "[Automated periodic check-in] Use gmail_list_messages with query 'is:unread' to check for "
-    "important new emails, and calendar_list_events to check for events starting soon. Compare "
-    "against what you've already told the user in the recent conversation above - do not repeat "
-    "something you already flagged unless there's new or materially changed information (e.g. "
-    "an event is now starting much sooner, or a new reply came in). If there's something worth "
-    "telling the user, reply with a short message for them, and call gmail_mark_as_read on each "
-    "email you report. If there's nothing new and noteworthy, reply with exactly: "
-    "NOTHING_TO_REPORT"
+    "[Automated periodic check-in] Use gmail_list_messages with query "
+    "'is:unread (category:primary OR (category:updates is:important))' to check for new mail. "
+    "This deliberately limits results to the Primary inbox plus important Updates, and excludes "
+    "Promotions, Social, and Forums - do NOT broaden the query to plain 'is:unread'. Then use "
+    "calendar_list_events to check for events starting soon. Only flag things that genuinely "
+    "matter to the user (a real message from a person, a bill or account/security notice, an "
+    "event starting soon) - ignore marketing, newsletters, receipts, and automated noise even "
+    "if they slip through. Compare against what you've already told the user in the recent "
+    "conversation above - do not repeat something you already flagged unless there's new or "
+    "materially changed information (e.g. an event is now starting much sooner, or a new reply "
+    "came in). If there's something worth telling the user, reply with a short message for them, "
+    "and call gmail_mark_as_read on each email you report. If there's nothing new and noteworthy, "
+    "reply with exactly: NOTHING_TO_REPORT"
 )
 SCHEDULED_TASK_PROMPT = (
     "[Scheduled task] The user previously asked you to do the following at this exact time. "

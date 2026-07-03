@@ -1,6 +1,6 @@
 # ErezBot
 
-A personal AI assistant that lives in Telegram. It's powered by Gemini and can use a real set of tools on your machine: run shell commands, manage files, browse the web with a visible browser, search the web, read and send Gmail, manage Google Calendar and Drive, remember facts about you, and run tasks on a schedule — including proactively checking your email and calendar every hour and messaging you if something needs your attention.
+A personal AI assistant that lives in Telegram. It's powered by Gemini and can use a real set of tools on your machine: run shell commands and interactive processes, manage files, browse the web, read and send Gmail, manage Google Calendar and Drive, remember facts about you, learn reusable procedures as skills, and run tasks on a schedule — including proactively checking your email and calendar every hour and messaging you if something needs your attention. It understands photos and voice messages, deploys itself when you push to main, and updates on command with `/update`.
 
 The bot only responds to a single Telegram user (you). Anyone else who messages it is ignored.
 
@@ -9,10 +9,11 @@ The bot only responds to a single Telegram user (you). Anyone else who messages 
 - **Agentic tool loop** — the model chains tool calls (up to 20 per request, 100 in persist mode) until the task is done, with duplicate-call detection so it can't get stuck repeating itself.
 - **Photo and voice input** — send a photo (with or without a caption) or a voice message and the model sees/hears it directly. Voice commands run the full tool loop, so you can dictate tasks. Photos are downloaded at a cost-capped resolution.
 - **Shell access with guardrails** — risky tools (shell commands, background processes, sending email, moving files) require a one-tap Approve/Deny confirmation in the chat before they run (typing "yes" works too). Truly destructive commands (`format`, `diskpart`, fork bombs, ...) are always blocked, even if approved.
-- **Long-running processes** — servers and watchers run in the background with an ID; the bot can read their output, list them, and stop them. A shell command that turns out to be long-running is automatically moved to the background instead of hanging.
+- **Long-running processes** — servers and watchers run in the background with an ID; the bot can read their output, type into their console (answer prompts, pick menu options), list them, and stop them. A shell command that turns out to be long-running is automatically moved to the background instead of hanging.
 - **Browser automation** — a visible Chromium window driven by Playwright: navigate, screenshot, click (by coordinate or by indexed element map), type, scroll.
 - **Google integration** — Gmail (list/read/send/mark read), Calendar (list/create events), Drive (list/read/upload/download to disk).
 - **Memory** — the bot saves important facts about you to a local SQLite database and loads them into every conversation.
+- **Skills** — reusable step-by-step playbooks the bot writes for itself (markdown files in `skills/`, gitignored). Every conversation sees a one-line index; the full playbook is loaded only when a task matches, keeping prompt costs flat as knowledge grows. Teach it a procedure once ("save that as a skill") and it follows it in every future conversation.
 - **Multiple conversations** — create, list, switch, and rename separate conversation histories.
 - **Scheduled tasks** — "remind me at 5pm to..." style tasks persist in the database, survive restarts, and execute with the full tool loop.
 - **Proactive check-ins** — every hour the bot checks for unread email and upcoming calendar events and messages you only if there's something new worth flagging.
@@ -107,7 +108,10 @@ Then message your bot on Telegram. The first message also registers your chat as
 | `google_services.py` | Gmail, Calendar, and Drive tools plus the OAuth flow |
 | `database.py` | SQLite storage: conversations, memory, settings, scheduled tasks |
 | `setup_bot.py` | Interactive first-time setup (see Quick start) |
-| `test_helpers.py` | Unit tests for the command guardrails and reply helpers — run with `python -m unittest test_helpers` |
+| `test_helpers.py` | Unit tests for the command guardrails, reply helpers, and skills — run with `python -m unittest test_helpers` |
+| `skills/` | The bot's saved playbooks, one markdown file each (created at runtime; gitignored — they contain machine-specific detail) |
+| `deploy/` | Auto-deploy script + systemd units for the poll-based deployer (see below) |
+| `.github/workflows/ci.yml` | CI: runs the test suite on every push and pull request |
 
 Tool declarations are generated automatically from each function's signature and docstring — to add a tool, write the function and register it in `tool_dict` in `main.py`.
 
@@ -122,7 +126,7 @@ git clone <your repo url> ~/ErezBot
 scp .env credentials.json token.json memory.db user@server:~/ErezBot/
 ```
 
-Copying `token.json` matters: the Google consent flow (`setup_auth`) needs a browser, which a headless server doesn't have — but a `token.json` created elsewhere works anywhere and refreshes itself. `memory.db` is optional (brings conversations, memories, and pending scheduled tasks along).
+Copying `token.json` matters: the Google consent flow (`setup_auth`) needs a browser, which a headless server doesn't have — but a `token.json` created elsewhere works anywhere and refreshes itself. `memory.db` is optional (brings conversations, memories, and pending scheduled tasks along), as is the `skills/` folder if you've accumulated playbooks (`scp -r skills ...`).
 
 ```bash
 sudo apt update && sudo apt install -y python3-venv xvfb
@@ -164,13 +168,14 @@ Important: run only ONE instance per bot token. Two pollers (e.g. the old Window
 
 ### Auto-deploy on new commits
 
+Every push also runs the unit tests in GitHub Actions (see the repo's Actions tab), so a broken commit shows a red ✗ before the server picks it up.
+
 The `deploy/` folder contains a poll-based deployer: every 2 minutes the server checks `origin/main`, and if there are new commits it pulls them, updates dependencies, and restarts the bot. No exposed ports and no GitHub secrets — the server only ever connects outward. (A push-triggered self-hosted runner would be instant, but GitHub advises against self-hosted runners on public repos.)
 
 Setup on the server (after the base install above):
 
 ```bash
 cd ~/ErezBot
-chmod +x deploy/deploy.sh
 
 # Allow the deploy script (running as your user) to restart the bot - and nothing else:
 echo "$USER ALL=(root) NOPASSWD: /usr/bin/systemctl restart erezbot" | sudo tee /etc/sudoers.d/erezbot-deploy
@@ -184,7 +189,7 @@ journalctl -u erezbot-deploy -f     # watch deploys happen
 systemctl list-timers erezbot-deploy.timer   # see when the next check fires
 ```
 
-From then on, `git push` to main is a deploy: the bot restarts on the new code within ~2 minutes. The script uses `git reset --hard origin/main`, so never make local edits in the server checkout — they'll be discarded (your untracked `.env`, `token.json`, `credentials.json`, and `memory.db` are safe).
+From then on, `git push` to main is a deploy: the bot restarts on the new code within ~2 minutes. The script uses `git reset --hard origin/main`, so never make local edits in the server checkout — they'll be discarded (untracked state — `.env`, `token.json`, `credentials.json`, `memory.db`, and the `skills/` folder — is safe).
 
 ## Security notes
 
