@@ -6,8 +6,12 @@ reply-handling helpers in main.py. Run from the project root with:
 Importing main requires the .env to be present (the bot refuses to start without its keys).
 No network calls are made and no Telegram/Gemini traffic is generated.
 """
+import os
+import tempfile
 import unittest
+from unittest import mock
 
+import tools
 from tools import _is_blocked, _download_command_redirect
 from main import _chunk_message, INVALID_REPLY_PATTERN, TELEGRAM_MAX_MESSAGE_CHARS
 
@@ -98,6 +102,52 @@ class TestInvalidReplyPattern(unittest.TestCase):
             "Here's the link: https://example.com/page",        # clean URL, no tracking params
         ]:
             self.assertIsNone(INVALID_REPLY_PATTERN.search(text), f"should be allowed: {text!r}")
+
+
+class TestSkills(unittest.TestCase):
+    def setUp(self):
+        #Redirect skill storage to a throwaway temp dir so tests never touch real skills
+        self._tmp = tempfile.TemporaryDirectory()
+        self._patch = mock.patch.object(tools, "SKILLS_DIR", self._tmp.name)
+        self._patch.start()
+
+    def tearDown(self):
+        self._patch.stop()
+        self._tmp.cleanup()
+
+    def test_save_load_roundtrip(self):
+        tools.save_skill("terraria-server", "Managing the server", "Step 1\nStep 2")
+        loaded = tools.load_skill("terraria-server")
+        self.assertIn("Managing the server", loaded)
+        self.assertIn("Step 1", loaded)
+
+    def test_name_is_sanitized(self):
+        #Spaces/punctuation/case collapse to a safe kebab-case filename
+        tools.save_skill("Terraria Server!", "desc", "body")
+        self.assertTrue(os.path.exists(os.path.join(self._tmp.name, "terraria-server.md")))
+
+    def test_index_shows_description_only(self):
+        tools.save_skill("a-skill", "first line is the description", "hidden body text")
+        index = tools.skills_index()
+        self.assertIn("- a-skill: first line is the description", index)
+        self.assertNotIn("hidden body text", index)
+
+    def test_path_traversal_is_blocked(self):
+        #A traversal attempt sanitizes to a harmless name and finds nothing to load
+        result = tools.load_skill("../../../etc/passwd")
+        self.assertTrue(result.startswith("No skill named"))
+        #Nothing was written outside the temp dir
+        self.assertEqual([], [f for f in os.listdir(self._tmp.name)])
+
+    def test_delete(self):
+        tools.save_skill("temp", "d", "b")
+        self.assertIn("temp", tools.skills_index())
+        tools.delete_skill("temp")
+        self.assertEqual("", tools.skills_index())
+
+    def test_empty_name_rejected(self):
+        result = tools.save_skill("!!!", "d", "b")
+        self.assertTrue(result.startswith("Error"))
 
 
 if __name__ == "__main__":
