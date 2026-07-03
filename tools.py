@@ -305,6 +305,94 @@ def read_memory() -> str:
         return f"Error: {e}"
 
 
+# Skills: reusable procedure playbooks the model loads on demand. One markdown file per
+# skill in skills/: line 1 is the one-line description (shown in the system-prompt index),
+# the rest is the playbook. The folder is gitignored - skills hold server-specific detail
+# (usernames, paths) that doesn't belong in a public repo.
+SKILLS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "skills")
+
+def _skill_path(name: str) -> Optional[str]:
+    """Maps a skill name to a safe filename: lowercased, [a-z0-9-] only. Returns None if
+    nothing survives sanitization. Keeps traversal tricks ('../x') from escaping SKILLS_DIR."""
+    clean = re.sub(r"[^a-z0-9-]+", "-", name.strip().lower()).strip("-")
+    if not clean:
+        return None
+    return os.path.join(SKILLS_DIR, f"{clean}.md")
+
+def skills_index() -> str:
+    """Returns one '- name: description' line per saved skill (for the system prompt).
+    Not a model tool - the index is injected into every conversation automatically."""
+    if not os.path.isdir(SKILLS_DIR):
+        return ""
+    lines = []
+    for filename in sorted(os.listdir(SKILLS_DIR)):
+        if not filename.endswith(".md"):
+            continue
+        path = os.path.join(SKILLS_DIR, filename)
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                description = next((line.strip() for line in f if line.strip()), "(no description)")
+        except OSError:
+            continue
+        lines.append(f"- {filename[:-3]}: {description}")
+    return "\n".join(lines)
+
+def load_skill(name: str) -> str:
+    """Loads the full text of a saved skill - a step-by-step playbook for a specific kind
+    of task. ALWAYS load the matching skill before starting a task that fits one of the
+    skill descriptions listed in your instructions, and follow what it says.
+
+    Args:
+        name: The skill's name, exactly as listed in the skills index.
+    """
+    path = _skill_path(name)
+    if path is None or not os.path.exists(path):
+        available = skills_index() or "(none saved yet)"
+        return f"No skill named '{name}'. Available skills:\n{available}"
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return f.read()
+    except Exception as e:
+        return f"Error: {e}"
+
+def save_skill(name: str, description: str, content: str) -> str:
+    """Saves (or overwrites) a skill: a reusable playbook for a recurring multi-step task,
+    written for your future self. Use this when the user teaches you a procedure, corrects
+    you on one, or asks you to remember how to do something - include exact commands, paths,
+    and pitfalls. Prefer skills for procedures; save_memory is for short standalone facts.
+
+    Args:
+        name: Short kebab-case name, e.g. 'terraria-server'.
+        description: One line saying when this skill applies - it's how you'll find it later.
+        content: The full playbook: steps, exact commands, paths, warnings.
+    """
+    path = _skill_path(name)
+    if path is None:
+        return "Error: skill name must contain letters or digits."
+    try:
+        os.makedirs(SKILLS_DIR, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(f"{description.strip()}\n\n{content.strip()}\n")
+        return f"Skill saved: {os.path.basename(path)[:-3]} - {description.strip()}"
+    except Exception as e:
+        return f"Error: {e}"
+
+def delete_skill(name: str) -> str:
+    """Deletes a saved skill that is wrong or no longer needed.
+
+    Args:
+        name: The skill's name, exactly as listed in the skills index.
+    """
+    path = _skill_path(name)
+    if path is None or not os.path.exists(path):
+        return f"No skill named '{name}'."
+    try:
+        os.remove(path)
+        return f"Skill deleted: {name}"
+    except Exception as e:
+        return f"Error: {e}"
+
+
 def schedule_task(when: str, task: str) -> str:
     """Schedules a task to be executed automatically at a specific future time, using the
     same tools available now (e.g. send an email, create a file, post a calendar event).
