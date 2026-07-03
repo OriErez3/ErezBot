@@ -349,7 +349,51 @@ async def _keep_typing(bot: Any, chat_id: int, stop: asyncio.Event) -> None:
         except asyncio.TimeoutError:
             pass
 
-def _make_confirm_callback(bot: Any, chat_id: int):
+#When True (default), answered confirmation prompts stay in the chat, edited to show the
+#outcome (an audit trail of what was approved). When False, they're deleted once answered.
+#Timed-out prompts always stay - a missed confirmation shouldn't vanish silently.
+KEEP_CONFIRM_PROMPTS = True
+
+class _StatusMessage:
+    """The single live 'what the bot is doing' message. Besides updating its text, it can
+    bump itself to the bottom of the chat (delete + re-send with the same text) - needed
+    after a confirmation prompt, which otherwise strands the status message above it."""
+    def __init__(self, bot: Any, chat_id: int, silent: bool = False):
+        self.bot = bot
+        self.chat_id = chat_id
+        self.silent = silent #proactive check-ins/scheduled tasks shouldn't ping the user's phone
+        self.msg: Any = None
+        self.text = "Thinking..."
+
+    async def start(self, text: str) -> None:
+        self.text = text
+        self.msg = await self.bot.send_message(chat_id=self.chat_id, text=text, disable_notification=self.silent)
+
+    async def update(self, text: str) -> None:
+        self.text = text
+        try:
+            await self.msg.edit_text(text)
+        except Exception:
+            pass
+
+    async def bump_to_bottom(self) -> None:
+        try:
+            await self.msg.delete()
+        except Exception:
+            pass
+        try:
+            #Always silent: this is a reposition, not news worth a notification
+            self.msg = await self.bot.send_message(chat_id=self.chat_id, text=self.text, disable_notification=True)
+        except Exception:
+            pass
+
+    async def delete(self) -> None:
+        try:
+            await self.msg.delete()
+        except Exception:
+            pass
+
+def _make_confirm_callback(bot: Any, chat_id: int, status: Any = None):
     """Builds an async callback the tool loop can await before running a risky tool. It
     messages the owner, then blocks on a Future that respond() resolves with the owner's
     next message. Times out to a denial so an unattended risky call is cancelled, not run."""
@@ -377,12 +421,23 @@ def _make_confirm_callback(bot: Any, chat_id: int):
             outcome = "⏰ No response - action cancelled."
         else:
             outcome = "❌ Denied"
-        #Edit the prompt to show the outcome and drop the buttons, so a stale prompt can't
-        #be tapped later and the chat log reads as a record of what was approved.
-        try:
-            await prompt_msg.edit_text(f"{prompt_text}\n\n{outcome}")
-        except Exception:
-            pass
+        if KEEP_CONFIRM_PROMPTS or answer is None:
+            #Edit the prompt to show the outcome and drop the buttons, so a stale prompt can't
+            #be tapped later and the chat log reads as a record of what was approved.
+            try:
+                await prompt_msg.edit_text(f"{prompt_text}\n\n{outcome}")
+            except Exception:
+                pass
+        else:
+            #Disappear mode: the answered prompt is clutter - remove it entirely
+            try:
+                await prompt_msg.delete()
+            except Exception:
+                pass
+        #Either way the status message is no longer the newest message (the prompt and/or
+        #the user's typed reply landed after it) - move it back to the bottom.
+        if status is not None:
+            await status.bump_to_bottom()
         return approved
     return confirm
 
@@ -533,17 +588,11 @@ async def _handle_user_request(update: telegram.Update, context: ContextTypes.DE
             disable_notification=True,
         )
     async with lock:
-        status_msg = await context.bot.send_message(chat_id=int_chat_id, text="Thinking...")
+        status = _StatusMessage(context.bot, int_chat_id)
+        await status.start("Thinking...")
         stop_typing = asyncio.Event()
         typing_task = asyncio.create_task(_keep_typing(context.bot, int_chat_id, stop_typing))
-
-        async def on_status(text: str) -> None:
-            try:
-                await status_msg.edit_text(text)
-            except Exception:
-                pass
-
-        confirm = _make_confirm_callback(context.bot, int_chat_id)
+        confirm = _make_confirm_callback(context.bot, int_chat_id, status)
 
         try:
             chat_id = str(int_chat_id) #Captures where to send proactive/unprompted messages later
@@ -551,7 +600,7 @@ async def _handle_user_request(update: telegram.Update, context: ContextTypes.DE
                 database.set_setting("chat_id", chat_id)
             conversation_id = database.get_active_conversation_id()
             add_to_conversation("user", history_text, conversation_id) #Saves the user's message to the conversation history in the database
-            final_text, _, tool_entries = await _generate_response(user_message, chat_id=int_chat_id, persist_mode=PERSIST_MODE, status_callback=on_status, confirm_callback=confirm, media_parts=media_parts)
+            final_text, _, tool_entries = await _generate_response(user_message, chat_id=int_chat_id, persist_mode=PERSIST_MODE, status_callback=status.update, confirm_callback=confirm, media_parts=media_parts)
             add_to_conversation("model", final_text, conversation_id, tool_log="\n".join(tool_entries)) #Saves the AI's response to the conversation history in the database
             for chunk in _chunk_message(final_text): #Sends the AI's response back to the user on Telegram
                 await update.message.reply_text(chunk)
@@ -561,10 +610,7 @@ async def _handle_user_request(update: telegram.Update, context: ContextTypes.DE
         finally:
             stop_typing.set()
             typing_task.cancel()
-            try:
-                await status_msg.delete()
-            except Exception:
-                pass
+            await status.delete()
 
 async def respond(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     #Edited messages, channel posts, reactions etc. arrive with message=None - nothing to respond to
@@ -683,6 +729,17 @@ async def toggle_persist(update: telegram.Update, context: ContextTypes.DEFAULT_
         status = "OFF."
     await update.message.reply_text(f"Persistent mode is now {status}")
 
+async def toggle_prompts(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message is None:
+        return
+    global KEEP_CONFIRM_PROMPTS
+    KEEP_CONFIRM_PROMPTS = not KEEP_CONFIRM_PROMPTS
+    if KEEP_CONFIRM_PROMPTS:
+        status = "KEPT - answered confirmation prompts stay in the chat, marked ✅/❌, as a record of what you approved."
+    else:
+        status = "CLEANED UP - confirmation prompts disappear once you answer them. (Timed-out prompts always stay so a missed one isn't hidden.)"
+    await update.message.reply_text(f"Confirmation prompts are now {status}")
+
 async def toggle_bypass(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.message is None:
         return
@@ -799,10 +856,11 @@ async def proactive_check(context: ContextTypes.DEFAULT_TYPE) -> None:
     async with lock:
         #Silent - this fires every hour and usually finds nothing; the notification for the
         #deleted status message would still ping the user's phone. A real report still notifies.
-        status_msg = await context.bot.send_message(chat_id=int_chat_id, text="Checking in...", disable_notification=True)
+        status = _StatusMessage(context.bot, int_chat_id, silent=True)
+        await status.start("Checking in...")
         stop_typing = asyncio.Event()
         typing_task = asyncio.create_task(_keep_typing(context.bot, int_chat_id, stop_typing))
-        confirm = _make_confirm_callback(context.bot, int_chat_id)
+        confirm = _make_confirm_callback(context.bot, int_chat_id, status)
         try:
             final_text, give_up, tool_entries = await _generate_response(CHECKIN_PROMPT, chat_id=int_chat_id, confirm_callback=confirm)
         except Exception:
@@ -811,10 +869,7 @@ async def proactive_check(context: ContextTypes.DEFAULT_TYPE) -> None:
         finally:
             stop_typing.set()
             typing_task.cancel()
-            try:
-                await status_msg.delete()
-            except Exception:
-                pass
+            await status.delete()
         if give_up or final_text.strip().upper() == "NOTHING_TO_REPORT":
             return
         for chunk in _chunk_message(final_text):
@@ -834,10 +889,11 @@ async def check_scheduled_tasks(context: ContextTypes.DEFAULT_TYPE) -> None:
         #Waits for the lock (unlike the check-in, which skips): the user explicitly asked
         #for this to run, so it queues behind whatever is in flight rather than being dropped.
         async with _get_generation_lock(int_chat_id):
-            status_msg = await context.bot.send_message(chat_id=int_chat_id, text="Running scheduled task...", disable_notification=True)
+            status = _StatusMessage(context.bot, int_chat_id, silent=True)
+            await status.start("Running scheduled task...")
             stop_typing = asyncio.Event()
             typing_task = asyncio.create_task(_keep_typing(context.bot, int_chat_id, stop_typing))
-            confirm = _make_confirm_callback(context.bot, int_chat_id)
+            confirm = _make_confirm_callback(context.bot, int_chat_id, status)
             try:
                 final_text, _, tool_entries = await _generate_response(SCHEDULED_TASK_PROMPT.format(task=task["task"]), chat_id=int_chat_id, confirm_callback=confirm)
             except Exception:
@@ -847,10 +903,7 @@ async def check_scheduled_tasks(context: ContextTypes.DEFAULT_TYPE) -> None:
             finally:
                 stop_typing.set()
                 typing_task.cancel()
-                try:
-                    await status_msg.delete()
-                except Exception:
-                    pass
+                await status.delete()
             database.delete_scheduled_task(task["id"])
             for chunk in _chunk_message(final_text):
                 await context.bot.send_message(chat_id=int_chat_id, text=chunk)
@@ -864,6 +917,7 @@ async def _post_init(application: Any) -> None:
         telegram.BotCommand("clear", "Clear the active conversation's history"),
         telegram.BotCommand("persist", "Toggle persistent mode (don't give up until the task is done)"),
         telegram.BotCommand("bypass", "DANGER: toggle skipping the confirmation prompt for risky actions"),
+        telegram.BotCommand("prompts", "Toggle whether answered confirmation prompts stay in the chat or disappear"),
         telegram.BotCommand("new", "Start a new conversation"),
         telegram.BotCommand("list", "List all conversations"),
         telegram.BotCommand("switch", "Switch to a conversation by number"),
@@ -886,6 +940,7 @@ def main() -> None:
     application.add_handler(CommandHandler("clear", clear, filters=user_filter))
     application.add_handler(CommandHandler("persist", toggle_persist, filters=user_filter))
     application.add_handler(CommandHandler("bypass", toggle_bypass, filters=user_filter))
+    application.add_handler(CommandHandler("prompts", toggle_prompts, filters=user_filter))
     application.add_handler(CommandHandler("new", new_conversation, filters=user_filter))
     application.add_handler(CommandHandler("list", list_conversations_cmd, filters=user_filter))
     application.add_handler(CommandHandler("switch", switch_conversation, filters=user_filter))

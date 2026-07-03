@@ -96,6 +96,7 @@ Then message your bot on Telegram. The first message also registers your chat as
 | `/persist` | Toggle persistent mode — the bot won't give up on a task until it's done (raises the tool-call cap from 20 to 100) |
 | `/bypass` | ⚠️ Toggle skipping the confirmation prompt for risky actions. The hard blocklist still applies. Use with care. |
 | `/update` | Pull the latest commits for the current branch and restart on the new code (manual counterpart to the auto-deploy timer) |
+| `/prompts` | Toggle whether answered confirmation prompts stay in the chat (marked ✅/❌, the default) or disappear once answered. The live status message re-bottoms itself after each prompt either way. |
 
 ## Project layout
 
