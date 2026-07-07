@@ -16,7 +16,7 @@ import sys
 import base64
 import logging
 import re
-from datetime import datetime
+from datetime import datetime, time as dt_time
 from typing import Any
 load_dotenv()
 logging.basicConfig(
@@ -202,16 +202,28 @@ CHECKIN_PROMPT = (
     "[Automated periodic check-in] Use gmail_list_messages with query "
     "'is:unread (category:primary OR (category:updates is:important))' to check for new mail. "
     "This deliberately limits results to the Primary inbox plus important Updates, and excludes "
-    "Promotions, Social, and Forums - do NOT broaden the query to plain 'is:unread'. Then use "
-    "calendar_list_events to check for events starting soon. Only flag things that genuinely "
-    "matter to the user (a real message from a person, a bill or account/security notice, an "
-    "event starting soon) - ignore marketing, newsletters, receipts, and automated noise even "
-    "if they slip through. Compare against what you've already told the user in the recent "
-    "conversation above - do not repeat something you already flagged unless there's new or "
-    "materially changed information (e.g. an event is now starting much sooner, or a new reply "
-    "came in). If there's something worth telling the user, reply with a short message for them, "
+    "Promotions, Social, and Forums - do NOT broaden the query to plain 'is:unread'. Only flag "
+    "email that genuinely matters to the user (a real message from a person, a bill or "
+    "account/security notice) - ignore marketing, newsletters, receipts, and automated noise "
+    "even if it slips through. This is an email-only check - do NOT look at the calendar (a "
+    "separate daily briefing handles events). Compare against what you've already told the user "
+    "in the recent conversation above - do not repeat something you already flagged unless a new "
+    "reply came in. If there's an email worth telling the user about, reply with a short message "
     "and call gmail_mark_as_read on each email you report. If there's nothing new and noteworthy, "
     "reply with exactly: NOTHING_TO_REPORT"
+)
+#Calendar lives here, not in the hourly check-in: a once-a-day briefing means the user hears
+#about an event once (in the morning) instead of every hour. Runs at MORNING_BRIEFING_HOUR
+#in the server's local timezone.
+MORNING_BRIEFING_HOUR = 8
+MORNING_PROMPT = (
+    "[Morning briefing] Good morning. Use calendar_list_events to look up the user's upcoming "
+    "events, then give a short, friendly summary of what's on for TODAY and TOMORROW only - "
+    "times and titles, soonest first, grouped under 'Today' and 'Tomorrow' headings. Use the "
+    "current date/time in your system info to decide which events fall on those two days and to "
+    "skip any that have already ended. Keep it brief - no events for a day means just say so for "
+    "that day. If there are genuinely no events on either today or tomorrow, reply with exactly: "
+    "NOTHING_TO_REPORT"
 )
 SCHEDULED_TASK_PROMPT = (
     "[Scheduled task] The user previously asked you to do the following at this exact time. "
@@ -848,28 +860,31 @@ async def rename_conversation_cmd(update: telegram.Update, context: ContextTypes
     database.rename_conversation(active_id, name)
     await update.message.reply_text(f"Renamed Conversation {active_id} to '{name}'.")
 
-async def proactive_check(context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Periodically asks the model to check for anything noteworthy (emails, calendar events,
-    etc.) and messages the user unprompted if it finds something worth flagging."""
+async def _run_unprompted_check(context: ContextTypes.DEFAULT_TYPE, prompt: str, status_text: str, skip_if_busy: bool = True) -> None:
+    """Shared machinery for the timer-driven jobs (hourly email check-in, morning briefing):
+    take the per-chat lock, run a generation on `prompt`, and message the user unless the
+    model replies NOTHING_TO_REPORT. skip_if_busy=True bails when the user has a task in flight
+    (fine for the hourly check - another runs soon); False waits for the lock instead, so a
+    once-a-day briefing isn't lost just because a task happened to be running when it fired."""
     chat_id = database.get_setting("chat_id")
     if not chat_id:
         return
     int_chat_id = int(chat_id)
     lock = _get_generation_lock(int_chat_id)
-    if lock.locked():
-        return #the user's task takes priority - skip this cycle, the next one is an hour away
+    if skip_if_busy and lock.locked():
+        return #the user's task takes priority - skip this cycle, the next one is soon
     async with lock:
-        #Silent - this fires every hour and usually finds nothing; the notification for the
+        #Silent - these fire unprompted and often find nothing; the notification for the
         #deleted status message would still ping the user's phone. A real report still notifies.
         status = _StatusMessage(context.bot, int_chat_id, silent=True)
-        await status.start("Checking in...")
+        await status.start(status_text)
         stop_typing = asyncio.Event()
         typing_task = asyncio.create_task(_keep_typing(context.bot, int_chat_id, stop_typing))
         confirm = _make_confirm_callback(context.bot, int_chat_id, status)
         try:
-            final_text, give_up, tool_entries = await _generate_response(CHECKIN_PROMPT, chat_id=int_chat_id, confirm_callback=confirm)
+            final_text, give_up, tool_entries = await _generate_response(prompt, chat_id=int_chat_id, confirm_callback=confirm)
         except Exception:
-            logger.exception("Proactive check-in failed")
+            logger.exception("Unprompted check failed")
             return
         finally:
             stop_typing.set()
@@ -880,6 +895,14 @@ async def proactive_check(context: ContextTypes.DEFAULT_TYPE) -> None:
         for chunk in _chunk_message(final_text):
             await context.bot.send_message(chat_id=int_chat_id, text=chunk)
         add_to_conversation("model", final_text, database.get_active_conversation_id(), tool_log="\n".join(tool_entries))
+
+async def proactive_check(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Hourly: checks for noteworthy unread email and messages the user if something matters."""
+    await _run_unprompted_check(context, CHECKIN_PROMPT, "Checking in...")
+
+async def morning_briefing(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Once daily: summarizes today's and tomorrow's calendar events."""
+    await _run_unprompted_check(context, MORNING_PROMPT, "Preparing your morning briefing...", skip_if_busy=False)
 
 async def check_scheduled_tasks(context: ContextTypes.DEFAULT_TYPE) -> None:
     """Runs and clears any scheduled tasks whose due time has passed, using the full tool loop
@@ -960,6 +983,10 @@ def main() -> None:
         check_scheduled_tasks,
         interval=SCHEDULED_TASK_POLL_SECONDS,
         first=SCHEDULED_TASK_POLL_SECONDS,
+    )
+    application.job_queue.run_daily( #type: ignore
+        morning_briefing,
+        time=dt_time(hour=MORNING_BRIEFING_HOUR, minute=0),  #server-local time (set the box's tz)
     )
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & user_filter, respond))
     application.add_handler(MessageHandler(filters.PHOTO & user_filter, respond_photo))
